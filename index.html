@@ -1,0 +1,1131 @@
+<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="utf-8" />
+  <title>WebGIS - Direktori Usaha v7</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+  <script src="https://unpkg.com/papaparse@5.4.1/papaparse.min.js"></script>
+
+  <style>
+    html, body { height:100%; margin:0; }
+    #toolbar { padding:8px 12px; background:#fff; border-bottom:1px solid #ddd; display:flex; flex-wrap:wrap; gap:8px; align-items:center; font-family:system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif; z-index:1000; }
+    #map { width:100%; height:calc(100% - 56px); }
+    select { padding:6px; min-width:160px; }
+    button { padding:6px 8px; }
+    button:disabled { opacity:0.6; cursor:not-allowed; }
+    .small-input { width:160px; padding:6px; }
+    .pool-ui { margin-top:6px; border-top:1px dashed #ddd; padding-top:6px; font-size:13px; }
+    
+    /* Loading Overlay */
+    .loading-overlay {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: rgba(255, 255, 255, 0.8);
+      display: none;
+      justify-content: center;
+      align-items: center;
+      z-index: 9999;
+    }
+    .loading-content {
+      text-align: center;
+      background: white;
+      padding: 20px 40px;
+      border-radius: 8px;
+      box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+    }
+    .loading-spinner {
+      border: 4px solid #f3f3f3;
+      border-radius: 50%;
+      border-top: 4px solid #3498db;
+      width: 40px;
+      height: 40px;
+      margin: 0 auto 10px;
+      animation: spin 1s linear infinite;
+    }
+    .loading-text {
+      color: #333;
+      font-size: 14px;
+      font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+    }
+    @keyframes spin {
+      0% { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
+    }
+    .pool-ui-item { display:flex; align-items:center; margin:4px 0; }
+    .pool-ui-flag { flex:1; }
+    .pool-ui-actions { display:flex; gap:4px; align-items:center; }
+    .copy-icon, .undo-icon { cursor:pointer; margin-left:6px; color:#0b5ed7; user-select:none; }
+    .undo-icon:hover { color:#d00; }
+    #__copy_toast { position:fixed; right:16px; bottom:16px; background:rgba(0,0,0,0.85); color:white; padding:8px 12px; border-radius:6px; z-index:999999; font-family:sans-serif; }
+    .legend { background:rgba(255,255,255,0.95); padding:8px 10px; border-radius:6px; font-family:sans-serif; font-size:13px; box-shadow:0 1px 5px rgba(0,0,0,0.3); line-height:1.4; }
+    .legend-item { display:flex; align-items:center; gap:6px; margin:3px 0; }
+    .legend-color { width:14px; height:14px; border-radius:3px; border:1px solid #555; }
+    .duplicate-form { margin-top:8px; display:flex; gap:6px; align-items:center; }
+    .duplicate-form input { padding:4px 6px; width:120px; }
+    .duplicate-form button { padding:4px 8px; font-size:13px; }
+  </style>
+</head>
+<body>
+  <!-- Loading Overlay -->
+  <div id="loading-overlay" class="loading-overlay">
+    <div class="loading-content">
+      <div class="loading-spinner"></div>
+      <div class="loading-text">Memuat data...</div>
+    </div>
+  </div>
+
+  <div id="toolbar">   
+
+    <!-- Layers -->
+    <button id="btnLoadSLS">📂 SLS (GeoJSON)</button>
+    <button id="btnLoadPLKUMKM">📂 PLKUMKM</button>
+    <button id="btnLoadMATCHAPRO">📂 Matchapro</button>
+    <button id="btnLoadSWMAPS">📂 SWMAPS</button>
+    <button id="btnLoadKDM">📂 KDM</button>
+
+    <!-- Pool -->
+    <button id="btnLoadPool">📂 Load Pool</button>
+    <button id="btnSavePool">💾 Simpan Pool</button>
+	
+	<!-- Filters -->
+    <select id="filterKec"><option value="">--Pilih Kecamatan--</option></select>
+    <select id="filterDesa"><option value="">--Pilih Desa--</option></select>
+    <select id="filterSLS"><option value="">--Pilih SLS--</option></select>
+
+    <!-- Hidden file inputs -->
+    <input type="file" id="filePool" accept=".csv,text/csv" style="display:none" />
+    <input type="file" id="fileSLS" accept=".geojson,application/geo+json,application/json" style="display:none" />
+    <input type="file" id="filePLKUKM" accept=".geojson,application/geo+json,application/json,.csv,text/csv" style="display:none" />
+    <input type="file" id="fileMATCHAPRO" accept=".csv,text/csv" style="display:none" />
+    <input type="file" id="fileSWMAPS" accept=".csv,text/csv" style="display:none" />
+    <input type="file" id="fileKDM" accept=".csv,text/csv,.geojson,application/geo+json,application/json" style="display:none" />
+  </div>
+
+  <div id="map"></div>
+
+<script>
+/* =================================
+   State & Utilities (refactor pool -> {id, id_sumber, flag})
+   ================================= */
+let pool = []; // array of { id, id_sumber, flag }
+let slsSnapshot = []; // cache of SLS features
+let pooledOverlayVisible = false;
+
+const POOL_BORDER = '#0066ff';
+const POOL_FILL = '#66b3ff';
+
+function normalizeNumber(x) {
+  if (x == null) return NaN;
+  const s = String(x).trim().replace(',', '.');
+  const v = parseFloat(s);
+  return Number.isFinite(v) ? v : NaN;
+}
+
+function getPropIgnoreCase(obj, candidates) {
+  if (!obj) return null;
+  const arr = Array.isArray(candidates) ? candidates : [candidates];
+  for (const cand of arr) {
+    const t = String(cand).toLowerCase();
+    for (const k in obj) {
+      if (!Object.hasOwn(obj, k)) continue;
+      if (k.toLowerCase() === t) return obj[k];
+    }
+  }
+  return null;
+}
+
+function showTempToast(msg, duration = 1400) {
+  const prev = document.getElementById('__copy_toast'); if (prev) prev.remove();
+  const div = document.createElement('div'); div.id='__copy_toast'; div.textContent = msg;
+  Object.assign(div.style, { position:'fixed', right:'16px', bottom:'16px', background:'rgba(0,0,0,0.85)', color:'#fff', padding:'8px 12px', borderRadius:'6px', zIndex:999999, fontFamily:'sans-serif' });
+  document.body.appendChild(div);
+  setTimeout(()=>{ div.remove(); }, duration);
+}
+
+async function copyToClipboard(text) {
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(text);
+    } else {
+      const ta = document.createElement('textarea'); ta.value = text; document.body.appendChild(ta); ta.select();
+      document.execCommand('copy'); document.body.removeChild(ta);
+    }
+    showTempToast('Tersalin: ' + text);
+  } catch (e) {
+    console.warn('copy failed', e); alert('Gagal menyalin: ' + text);
+  }
+}
+
+/* CSV pool parser: support both old header 'idsbr' and new 'id' */
+function csvToPool(text) {
+  const parsed = Papa.parse(text, { header: true, skipEmptyLines: true });
+  const out = [];
+  parsed.data.forEach(row => {
+    if (!row) return;
+    // accept old 'idsbr' or new 'id'
+    const idVal = (row.id || row.ID || row.idsbr || row.IDSBR || row.IdSbr || row.id_sbr || '').toString().trim();
+    const id_sumber = (row.id_sumber || row['id_sumber'] || row.id_sumber || row.id || row.ID || row.IDS || '').toString().trim();
+    const flag = (row.flag || row.FLAG || row.sumber || '').toString().trim() || '-';
+    out.push({ id: idVal || '-', id_sumber: id_sumber || '-', flag: flag || '-' });
+  });
+  return out;
+}
+
+function poolToCSV(arr) {
+  const header = 'id,id_sumber,flag\n';
+  const rows = arr.map(r => `${r.id},${r.id_sumber},${r.flag}`);
+  return header + rows.join('\n');
+}
+
+function safeFitBounds(layer) {
+  if (!layer) return;
+  try {
+    if (layer.getBounds && layer.getLayers && layer.getLayers().length > 0) map.fitBounds(layer.getBounds(), { padding:[20,20] });
+  } catch(e) {}
+}
+
+/* =================================
+   Map & Base Layers
+   ================================= */
+const map = L.map('map').setView([-7.82,112.02], 12);
+const osm = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(map);
+const googleHybrid = L.tileLayer('https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}', { maxZoom: 22 });
+
+map.createPane('paneSLS'); map.getPane('paneSLS').style.zIndex = 200;
+
+/* =================================
+   Layers: SLS, PLKUMKM, SWMAPS, KDM, Matchapro
+   ================================= */
+
+/* SLS polygon layer */
+const slsLayer = L.geoJSON(null, {
+  pane: 'paneSLS',
+  style: ()=>({ color:'#f202e2', weight:1.2, fillColor:'#f77eef', fillOpacity:0.25 }),
+  onEachFeature: (feature, layer) => {
+    const p = feature.properties || {};
+    const title = getPropIgnoreCase(p, ['nmsls','NMSLS','nmsls_name','Nama_SLS']) || '';
+    layer.bindPopup(`<strong>SLS</strong><br/>${title}`);
+  }
+}).addTo(map);
+
+/* PLKUMKM */
+const plkLayer = L.geoJSON(null, {
+  pointToLayer: (_f, latlng) => L.circleMarker(latlng, { radius:6, color:'#0b6e4f', fillColor:'#37b26c', fillOpacity:0.9, weight:1 }),
+  onEachFeature: (feature, layer) => {
+    const p = feature.properties || {};
+    const idsbr = getPropIgnoreCase(p, ['idsbr','IDSBR','id']) || '-';
+    const nama = getPropIgnoreCase(p, ['Nama_Usaha','nama_usaha','nama']) || '-';
+    const alamat = getPropIgnoreCase(p, ['alamat','Alamat','address']) || '-';
+    const lat = normalizeNumber(getPropIgnoreCase(p, ['latitude','Latitude','lat']));
+    const lon = normalizeNumber(getPropIgnoreCase(p, ['longitude','Longitude','lon','long']));
+    const gmap = (Number.isFinite(lat) && Number.isFinite(lon))? `<a href="https://www.google.com/maps/search/?api=1&query=${lat},${lon}" target="_blank">Google Maps</a><br/>` : '';
+    const html = `<strong style="color:#37b26c">PLKUMKM</strong><br/>
+      <strong>Nama Usaha:</strong> ${nama}<br/>
+      <strong>Sektor:</strong> ${p.Sektor}<br/>
+      <strong>Kelurahan:</strong> ${p.kelurahan}<br/>
+      <strong>SLS:</strong> ${p.nmsls}<br/>
+      ${gmap}`;
+    layer.bindPopup(html);
+  }
+}).addTo(map);
+
+/* helper marker builder */
+function createMarkerWithOrig(latlng, style) {
+  const m = L.circleMarker(latlng, style);
+  m._origStyle = Object.assign({}, style);
+  m._isPooled = false;
+  return m;
+}
+
+/* SWMAPS */
+const swmapsLayer = L.geoJSON(null, {
+  pointToLayer: (f, latlng) => createMarkerWithOrig(latlng, { radius:6, color:'#3b4992', fillColor:'#766cc7', fillOpacity:0.85, weight:1 }),
+  onEachFeature: (feature, layer) => {
+    layer.bindPopup('<div>Loading...</div>');
+    layer.on('popupopen', () => {
+      const p = feature.properties || {};
+      const idVal = (getPropIgnoreCase(p, ['id','ID','IDS','Id']) || '-').toString();
+      const nama = getPropIgnoreCase(p, ['Nama_Usaha','nama_usaha','nama','nama_komersial_usaha']) || '-';
+      const sektor = getPropIgnoreCase(p, ['Sektor','sektor']) || '-';
+	  const alamat = getPropIgnoreCase(p, ['alamat','Alamat','address']) || '-';
+	  const desa = getPropIgnoreCase(p, ['Desa','desa']) || '-';
+	  const nmsls = getPropIgnoreCase(p, ['SLS','sls','nmsls']) || '-';
+      const lat = normalizeNumber(getPropIgnoreCase(p, ['Latitude','latitude','lat']));
+      const lon = normalizeNumber(getPropIgnoreCase(p, ['Longitude','longitude','lon','long']));
+      const gmap = (Number.isFinite(lat) && Number.isFinite(lon))? `<a href="https://www.google.com/maps/search/?api=1&query=${lat},${lon}" target="_blank">Google Maps</a><br/>` : '';
+
+      // check pool by id_sumber === idVal OR id === idVal (so we can display relation)
+      const rel = pool.find(r => r.id_sumber === idVal || r.id === idVal);
+      // Check if ID is in pool with SWMAPS Pool flag
+      const isInPoolWithSWMAPSFlag = pool.some(r => (r.id === idVal || r.id_sumber === idVal) && r.flag === 'SWMAPS Pool');
+      
+      let extraHTML = '';
+      
+      // Pool system flags
+      if (rel) {
+        if (rel.flag === 'SWMAPS') {
+          extraHTML = `<div class="pool-ui">
+            <div class="pool-ui-item">
+              <div class="pool-ui-flag">
+                <strong>Matching dengan Matchapro</strong><br/>
+                <strong>ID:</strong> ${rel.id || '-'} <span class="undo-icon" data-layer="SWMAPS" data-id="${idVal}" title="Hapus dari Pool">🔁</span>
+              </div>
+            </div>
+          </div>`;
+        } else if (rel.flag === 'SWMAPS Pool') {
+          extraHTML = `<div class="pool-ui">
+            <div class="pool-ui-item">
+              <div class="pool-ui-flag"><em>Sudah didaftarkan di pool system</em></div>
+              <div class="pool-ui-actions">
+                <span class="undo-icon" data-layer="SWMAPS" data-id="${idVal}" title="Hapus dari Pool">🔁</span>
+              </div>
+            </div>
+          </div>`;
+        } else if (rel.flag === 'Duplikat SWMAPS') {
+          extraHTML = `<div class="pool-ui">
+            <div class="pool-ui-item">
+              <div class="pool-ui-flag">
+                <strong>Duplikat dengan</strong><br/>
+                <strong>ID:</strong> ${rel.id_sumber || '-'} <span class="undo-icon" data-layer="SWMAPS" data-id="${idVal}" title="Hapus dari Pool">🔁</span>
+              </div>
+            </div>
+          </div>`;
+        } else {
+          extraHTML = `<div class="pool-ui">
+            <div class="pool-ui-item">
+              <div class="pool-ui-flag"><em>Flag: ${rel.flag}</em></div>
+              <div class="pool-ui-actions">
+                <span class="undo-icon" data-layer="SWMAPS" data-id="${idVal}" title="Hapus dari Pool">🔁</span>
+              </div>
+            </div>
+          </div>`;
+        }
+      }
+
+      // Always show form actions
+      extraHTML += `<div class="pool-ui">
+        <button class="btn-input-pool-sw" data-id="${idVal}" ${isInPoolWithSWMAPSFlag ? 'disabled' : ''}>Input Pool</button>
+        
+        <!-- Duplicate form -->
+        <div style="margin-top:12px;">
+          <strong>Duplikat dengan:</strong>
+          <div class="duplicate-form">
+            <input type="text" id="dup_source_${idVal}" class="small-input" placeholder="Masukkan ID sumber">
+            <button onclick="handleSWMAPSDuplicate('${idVal}')">Simpan</button>
+          </div>
+        </div>
+      </div>`;
+
+      const basicHtml = `<strong style="color:#766cc7">SWMAPS</strong><br/>
+        <strong>ID:</strong> <span class="sw-id" data-copy-id="${String(idVal).replace(/"/g,'&quot;')}">${idVal}</span> <span class="copy-icon" data-copy-id="${String(idVal).replace(/"/g,'&quot;')}">📋</span><br/>
+		<strong>Nama Usaha:</strong> ${nama}<br/>
+		<strong>Sektor:</strong> ${sektor}<br/>
+		<strong>Kelurahan:</strong> ${desa}<br/>
+		<strong>SLS:</strong> ${nmsls}<br/>
+		${gmap}
+		<strong>User Upload:</strong> ${getPropIgnoreCase(p, ['User_Upload','user_upload']) || ''};`;
+
+      const statusHtml = rel ? `<div style="color:${POOL_BORDER};font-weight:bold;">✅ Sudah di Pool System</div>` : '';
+
+      const html = `${basicHtml}${statusHtml}${extraHTML}`;
+      const popup = layer.getPopup();
+      if (popup) { popup.setContent(html); popup.update(); } else { layer.bindPopup(html).openPopup(); }
+
+      setTimeout(() => {
+        const popupEl = popup.getElement(); if (!popupEl) return;
+        // Setup copy icons
+        const copyIcons = popupEl.querySelectorAll('.copy-icon[data-copy-id]');
+        copyIcons.forEach(icon => {
+          icon.onclick = () => {
+            const id = icon.getAttribute('data-copy-id');
+            if (id && id !== '-') copyToClipboard(id);
+          };
+        });
+        const btn = popupEl.querySelector('.btn-input-pool-sw[data-id]');
+        if (btn) {
+          btn.onclick = function() {
+            const id = this.getAttribute('data-id');
+            pool.push({ id: '-', id_sumber: id, flag: 'SWMAPS Pool' });
+            showTempToast('SWMAPS Pool: disimpan');
+            refreshPoolMarkers();
+            if (popup) {
+              popup.setContent(basicHtml + `<div style="color:${POOL_BORDER};font-weight:bold;">✅ Sudah di Pool System</div>` + `<div class="pool-ui"><em>Sudah didaftarkan di pool system</em> <span class="undo-icon" data-layer="SWMAPS" data-id="${id}" title="Hapus dari Pool">🔁</span></div>`);
+              popup.update();
+            }
+          };
+        }
+      }, 8);
+    });
+  }
+}).addTo(map);
+
+/* KDM */
+const kdmLayer = L.geoJSON(null, {
+  pointToLayer: (f, latlng) => createMarkerWithOrig(latlng, { radius:6, color:'#7a1e1e', fillColor:'#e15759', fillOpacity:0.85, weight:1 }),
+  onEachFeature: (feature, layer) => {
+    layer.bindPopup('<div>Loading...</div>');
+    layer.on('popupopen', () => {
+      const p = feature.properties || {};
+      const idVal = (getPropIgnoreCase(p, ['id','ID','IDS','Id']) || '-').toString();
+      const nama = getPropIgnoreCase(p, ['Nama_Usaha','nama_usaha','nama']) || '-';
+      const alamat = getPropIgnoreCase(p, ['alamat','Alamat','address']) || '-';
+      const sektor = getPropIgnoreCase(p, ['Sektor','sektor']) || '-';
+      const desa = getPropIgnoreCase(p, ['Desa','desa']) || '-';
+	  const nmsls = getPropIgnoreCase(p, ['SLS','sls','nmsls']) || '-';
+      const lat = normalizeNumber(getPropIgnoreCase(p, ['Latitude','latitude','lat']));
+      const lon = normalizeNumber(getPropIgnoreCase(p, ['Longitude','longitude','lon','long']));
+      const gmap = (Number.isFinite(lat) && Number.isFinite(lon))? `<a href="https://www.google.com/maps/search/?api=1&query=${lat},${lon}" target="_blank">Google Maps</a><br/>` : '';
+
+      const rel = pool.find(r => r.id_sumber === idVal || r.id === idVal);
+      // Check if ID is in pool with KDM Pool flag
+      const isInPoolWithKDMFlag = pool.some(r => (r.id === idVal || r.id_sumber === idVal) && r.flag === 'KDM Pool');
+
+      let extraHTML = '';
+      
+      // Pool system flags
+      if (rel) {
+        if (rel.flag === 'KDM') {
+          extraHTML = `<div class="pool-ui">
+            <div class="pool-ui-item">
+              <div class="pool-ui-flag">
+                <strong>Matching dengan Matchapro</strong><br/>
+                <strong>ID:</strong> ${rel.id || '-'} <span class="undo-icon" data-layer="KDM" data-id="${idVal}" title="Hapus dari Pool">🔁</span>
+              </div>
+            </div>
+          </div>`;
+        } else if (rel.flag === 'KDM Pool') {
+          extraHTML = `<div class="pool-ui">
+            <div class="pool-ui-item">
+              <div class="pool-ui-flag"><em>Sudah didaftarkan di pool system</em></div>
+              <div class="pool-ui-actions">
+                <span class="undo-icon" data-layer="KDM" data-id="${idVal}" title="Hapus dari Pool">🔁</span>
+              </div>
+            </div>
+          </div>`;
+        } else if (rel.flag === 'Duplikat KDM') {
+          extraHTML = `<div class="pool-ui">
+            <div class="pool-ui-item">
+              <div class="pool-ui-flag">
+                <strong>Duplikat dengan</strong><br/>
+                <strong>ID:</strong> ${rel.id_sumber || '-'} <span class="undo-icon" data-layer="KDM" data-id="${idVal}" title="Hapus dari Pool">🔁</span>
+              </div>
+            </div>
+          </div>`;
+        } else {
+          extraHTML = `<div class="pool-ui">
+            <div class="pool-ui-item">
+              <div class="pool-ui-flag"><em>Flag: ${rel.flag}</em></div>
+              <div class="pool-ui-actions">
+                <span class="undo-icon" data-layer="KDM" data-id="${idVal}" title="Hapus dari Pool">🔁</span>
+              </div>
+            </div>
+          </div>`;
+        }
+      }
+
+      // Always show form actions
+      extraHTML += `<div class="pool-ui">
+        <button class="btn-input-pool-kdm" data-id="${idVal}" ${isInPoolWithKDMFlag ? 'disabled' : ''}>Input Pool</button>
+        
+        <!-- Duplicate form -->
+        <div style="margin-top:12px;">
+          <strong>Duplikat dengan:</strong>
+          <div class="duplicate-form">
+            <input type="text" id="dup_source_${idVal}" class="small-input" placeholder="Masukkan ID sumber">
+            <button onclick="handleKDMDuplicate('${idVal}')">Simpan</button>
+          </div>
+        </div>
+      </div>`;
+
+      const basicHtml = `<strong style="color:#e15759">KDM</strong><br/>
+        <strong>ID:</strong> <span data-copy-id="${String(idVal).replace(/"/g,'&quot;')}">${idVal}</span> <span class="copy-icon" data-copy-id="${String(idVal).replace(/"/g,'&quot;')}">📋</span><br/>
+		<strong>Nama Usaha:</strong> ${nama}<br/>
+        <strong>Alamat:</strong> ${alamat}<br/>        
+        <strong>Sektor:</strong> ${sektor}<br/>
+        <strong>Kelurahan:</strong> ${desa}<br/>
+		<strong>SLS:</strong> ${nmsls}<br/>
+        ${gmap}
+		<strong>User upload:</strong> ${getPropIgnoreCase(p, ['User_Upload','user_upload']) || ''}<br/>
+		<strong>Ditagging pada:</strong> ${p['Ditagging pada'] || p.ditagging || ''}`;
+
+      const statusHtml = rel ? `<div style="color:${POOL_BORDER};font-weight:bold;">✅ Sudah di Pool System</div>` : '';
+
+      const html = `${basicHtml}${statusHtml}${extraHTML}`;
+      const popup = layer.getPopup();
+      if (popup) { popup.setContent(html); popup.update(); } else { layer.bindPopup(html).openPopup(); }
+
+      setTimeout(() => {
+        const popupEl = popup.getElement(); if (!popupEl) return;
+        const btn = popupEl.querySelector('.btn-input-pool-kdm[data-id]');
+        if (btn) {
+          btn.onclick = function() {
+            const id = this.getAttribute('data-id');
+            pool.push({ id: '-', id_sumber: id, flag: 'KDM Pool' });
+            showTempToast('KDM Pool: disimpan');
+            refreshPoolMarkers();
+            if (popup) {
+              popup.setContent(basicHtml + `<div style="color:${POOL_BORDER};font-weight:bold;">✅ Sudah di Pool System</div>` + `<div class="pool-ui"><em>Sudah didaftarkan di pool system</em> <span class="undo-icon" data-layer="KDM" data-id="${id}" title="Hapus dari Pool">🔁</span></div>`);
+              popup.update();
+            }
+          };
+        }
+      }, 8);
+    });
+  }
+}).addTo(map);
+
+/* Matchapro */
+const matchaproLayer = L.geoJSON(null, {
+  pointToLayer: (f, latlng) => createMarkerWithOrig(latlng, { radius:6, color:'#e68a00', fillColor:'#ffb84d', fillOpacity:0.9, weight:1 }),
+  onEachFeature: (feature, layer) => {
+    layer.bindPopup('<div>Loading...</div>');
+    layer.on('popupopen', () => {
+      buildMatchaproPopup(layer, feature);
+    });
+  }
+}).addTo(map);
+
+/* =================================
+   Layer control & legend (bottomleft)
+   ================================= */
+const poolOverlayGroup = L.layerGroup();
+const overlays = {
+  'SLS (Polygon)': slsLayer,
+  'PLKUMKM (Titik)': plkLayer,
+  'SWMAPS (Titik)': swmapsLayer,
+  'KDM (Titik)': kdmLayer,
+  'Matchapro (Titik)': matchaproLayer,
+  'Pool System (Titik)': poolOverlayGroup
+};
+const layerControl = L.control.layers({ 'OpenStreetMap': osm, 'Google Hybrid': googleHybrid }, overlays, { position:'bottomleft', collapsed:false }).addTo(map);
+
+const legend = L.control({ position: 'bottomleft' });
+legend.onAdd = function () {
+  const div = L.DomUtil.create('div', 'legend');
+  div.innerHTML = `
+    <div style="font-weight:bold;margin-bottom:6px;">Legenda</div>
+    <div class='legend-item'><div class='legend-color' style='background:#f202e2'></div> SLS (Polygon)</div>
+    <div class='legend-item'><div class='legend-color' style='background:#37b26c'></div> PLKUMKM (Titik)</div>
+    <div class='legend-item'><div class='legend-color' style='background:#766cc7'></div> SWMAPS (Titik)</div>
+    <div class='legend-item'><div class='legend-color' style='background:#e15759'></div> KDM (Titik)</div>
+    <div class='legend-item'><div class='legend-color' style='background:#ffb84d'></div> Matchapro (Titik)</div>
+    <div class='legend-item'><div class='legend-color' style='background:${POOL_FILL}; border:1px solid ${POOL_BORDER};'></div> Pool System (Titik)</div>`;
+  return div;
+};
+legend.addTo(map);
+
+/* =================================
+   Matchapro popup builder (v7: pool uses id)
+   ================================= */
+
+function escapeId(s) { return String(s).replace(/[^a-z0-9_\-]/gi, '_') || 'noid'; }
+
+function buildMatchaproPopup(layer, feature) {
+  const p = feature.properties || {};
+  const id = (p.idsbr || p.IDSBR || p.IdSbr || p.id_sbr || p.id || '').toString(); // treat p.idsbr as the Matchapro id field as before, but pool uses 'id'
+  const nama = getPropIgnoreCase(p, ['nama_usaha','Nama_Usaha','nama','nama_komersial_usaha']) || '-';
+  const alamat = getPropIgnoreCase(p, ['alamat','Alamat','address']) || '-';
+  const lat = normalizeNumber(getPropIgnoreCase(p, ['latitude','Latitude','lat']));
+  const lon = normalizeNumber(getPropIgnoreCase(p, ['longitude','Longitude','lon','long']));
+  const gmap = (Number.isFinite(lat) && Number.isFinite(lon)) ? `<a href="https://www.google.com/maps/search/?api=1&query=${lat},${lon}" target="_blank">Google Maps</a><br/>` : '';
+
+  // Find matching relations where pool.id === id and flag is KDM/SWMAPS
+  const relMatching = pool.filter(r => r.id === id && (r.flag === 'KDM' || r.flag === 'SWMAPS'));
+
+  // Find duplicate relations: flag == 'Duplikat' where r.id === id OR r.id_sumber === id
+  const relDup = pool.filter(r => r.flag === 'Duplikat' && (r.id === id || r.id_sumber === id));
+
+  // All relations referencing this id (either as id or as id_sumber)
+  const allRelsForId = pool.filter(r => r.id === id || r.id_sumber === id);
+
+  const uid = id ? escapeId(id) : ('noid_' + Math.random().toString(36).slice(2,8));
+
+  // Build blocks
+  let blocks = '';
+
+  // Pool indicator if any relation exists where this id is mentioned (either id or id_sumber)
+  const poolIndicatorExists = allRelsForId.length > 0;
+  if (poolIndicatorExists) {
+    blocks += `<div style="margin-top:6px;color:${POOL_BORDER};font-weight:bold;">✅ Sudah di Pool System</div>`;
+  }
+
+  // Matching blocks (KDM/SWMAPS) — show all pool entries where r.id === id and flag KDM/SWMAPS
+  if (relMatching.length) {
+    relMatching.forEach(r => {
+      blocks += `<div class="pool-ui">
+        <div class="pool-ui-item">
+          <div class="pool-ui-flag">
+            <strong>Matching dengan ${r.flag}</strong><br/>
+            <strong>ID:</strong> ${r.id_sumber || '-'} <span class="undo-icon" data-layer="MATCHAPRO" data-id="${id}" data-id_sumber="${r.id_sumber || ''}" data-flag="${r.flag}" title="Hapus relasi ini">🔁</span>
+          </div>
+        </div>
+      </div>`;
+    });
+  }
+
+  // Duplicate blocks - show entries where flag Duplikat and relates to this id
+  if (relDup.length) {
+    relDup.forEach(r => {
+      // show the related id (if r.id === id then show r.id_sumber as duplicate target, else show r.id)
+      const dupTarget = (r.id === id) ? (r.id_sumber || '-') : (r.id || '-');
+      blocks += `<div class="pool-ui">
+        <div class="pool-ui-item">
+          <div class="pool-ui-flag">
+            <strong>Duplikat</strong><br/>
+            <strong>ID:</strong> ${dupTarget} <span class="undo-icon" data-layer="MATCHAPRO" data-id="${r.id || ''}" data-id_sumber="${r.id_sumber || ''}" data-flag="Duplikat" title="Hapus relasi Duplikat ini">🔁</span>
+          </div>
+        </div>
+      </div>`;
+    });
+  }
+
+  // Other flags for this id (e.g., Tutup, belum ditagging)
+  const otherRels = pool.filter(r => r.id === id && (r.flag !== 'KDM' && r.flag !== 'SWMAPS' && r.flag !== 'Duplikat'));
+  if (otherRels.length) {
+    otherRels.forEach(r => {
+      blocks += `<div class="pool-ui">
+        <div class="pool-ui-item">
+          <div class="pool-ui-flag">
+            <i>Flag: ${r.flag}</i><br/>
+            <strong>ID:</strong> ${r.id_sumber || '-'} <span class="undo-icon" data-layer="MATCHAPRO" data-id="${r.id || ''}" data-id_sumber="${r.id_sumber || ''}" data-flag="${r.flag}" title="Hapus relasi ini">🔁</span>
+          </div>
+        </div>
+      </div>`;
+    });
+  }
+
+  // Form action: always present. "Belum ditagging" shown only when not in pool or has specific flags
+  const hasMatchingKdmSw = relMatching.length > 0;
+  // Check if ID is in pool with KDM or SWMAPS flags
+  const isInPoolWithFlags = pool.some(r => (r.id === id || r.id_sumber === id) && (r.flag === 'KDM' || r.flag === 'SWMAPS'));
+  
+  const formAction = `
+    <div class="pool-ui" style="margin-top:8px;">
+      <div><strong>Status Usaha</strong></div>
+      <label><input type="radio" name="status_${uid}" value="Aktif"> Aktif/Matching</label><br/>
+      <label><input type="radio" name="status_${uid}" value="Tutup"> Tutup</label><br/>
+      <label><input type="radio" name="status_${uid}" value="Duplikat"> Duplikat</label><br/>
+      <div id="subform_${uid}" style="margin-top:8px;"></div>
+      <div style="margin-top:8px;">
+        <button id="btn_save_${uid}" disabled>Simpan</button>
+        <button id="btn_belum_${uid}" ${isInPoolWithFlags ? 'disabled' : ''}>Belum ditagging</button>
+      </div>
+      <div id="msg_${uid}" style="margin-top:6px;color:green;font-size:12px"></div>
+    </div>
+  `;
+
+  const basicHtml = `<strong style="color:#ffb84d">Matchapro</strong><br/>
+    <strong>ID:</strong> <span id="id_display_${uid}">${id || '-'}</span> <span class="copy-icon" id="copy_id_${uid}" data-copy-id="${id || ''}" title="Salin ID">📋</span><br/>
+    <strong>Nama Usaha:</strong> ${nama}<br/>
+    <strong>Alamat:</strong> ${alamat}<br/>
+    ${gmap}`;
+
+  const popupHtml = `<div style="min-width:340px;">
+    ${basicHtml}
+    ${blocks}
+    ${formAction}
+  </div>`;
+
+  const popup = layer.getPopup();
+  if (popup) { popup.setContent(popupHtml); popup.update(); } else { layer.bindPopup(popupHtml).openPopup(); }
+
+  // copy binding
+  setTimeout(()=> {
+    const copyBtn = document.getElementById(`copy_id_${uid}`);
+    if (copyBtn) copyBtn.onclick = () => { if (id) copyToClipboard(id); };
+  }, 8);
+
+  // Attach form behaviors (always)
+  setTimeout(()=> {
+    const radios = Array.from(document.getElementsByName(`status_${uid}`));
+    const subform = document.getElementById(`subform_${uid}`);
+    const btnSave = document.getElementById(`btn_save_${uid}`);
+    const btnBelum = document.getElementById(`btn_belum_${uid}`);
+    const msg = document.getElementById(`msg_${uid}`);
+
+    function onRadioChange() {
+      const selected = radios.find(r => r.checked);
+      btnSave.disabled = !selected;
+      if (!selected) { subform.innerHTML = ''; return; }
+      const val = selected.value;
+      if (val === 'Aktif') {
+        subform.innerHTML = `<label>Flag:</label><br/><select id="flag_sel_${uid}"><option value="SWMAPS">SWMAPS</option><option value="KDM">KDM</option></select><br/>
+          <label>ID Sumber:</label><br/><input id="idsource_${uid}" class="small-input" placeholder="Masukkan ID sumber"/>`;
+      } else if (val === 'Duplikat') {
+        subform.innerHTML = `<label>ID Sumber:</label><br/><input id="idsource_${uid}" class="small-input" placeholder="Masukkan ID sumber"/>`;
+      } else if (val === 'Tutup') {
+        subform.innerHTML = `<div style="font-style:italic;color:#444">Tidak perlu ID sumber untuk status Tutup.</div>`;
+      } else {
+        subform.innerHTML = '';
+      }
+    }
+
+    radios.forEach(r => r.addEventListener('change', onRadioChange));
+    onRadioChange();
+
+    if (btnSave) btnSave.onclick = () => {
+      const selected = radios.find(r => r.checked);
+      if (!selected) return alert('Pilih status usaha terlebih dahulu');
+      const val = selected.value;
+      let id_sumber = '-';
+      let flag = '-';
+      if (val === 'Aktif') {
+        const flagSel = document.getElementById(`flag_sel_${uid}`);
+        const idInput = document.getElementById(`idsource_${uid}`);
+        flag = flagSel ? flagSel.value : 'SWMAPS';
+        id_sumber = idInput ? (idInput.value.trim() || '-') : '-';
+        if (id_sumber === '-') return alert('ID sumber harus diisi untuk status Aktif/Matching');
+      } else if (val === 'Tutup') {
+        flag = 'Tutup'; id_sumber = '-';
+      } else if (val === 'Duplikat') {
+        const idInput = document.getElementById(`idsource_${uid}`);
+
+        // Add handle functions for KDM and SWMAPS duplicates
+        window.handleKDMDuplicate = function(id) {
+          const input = document.getElementById(`dup_source_${id}`);
+          if (!input) return;
+          const id_sumber = input.value.trim();
+          if (!id_sumber) {
+            alert('ID sumber harus diisi untuk status Duplikat');
+            return;
+          }
+          if (id === id_sumber) {
+            alert('ID tidak boleh sama dengan ID sumber untuk status Duplikat!');
+            return;
+          }
+          pool.push({ id, id_sumber, flag: 'Duplikat KDM' });
+          showTempToast('Data duplikat KDM tersimpan');
+          refreshPoolMarkers();
+        };
+
+        window.handleSWMAPSDuplicate = function(id) {
+          const input = document.getElementById(`dup_source_${id}`);
+          if (!input) return;
+          const id_sumber = input.value.trim();
+          if (!id_sumber) {
+            alert('ID sumber harus diisi untuk status Duplikat');
+            return;
+          }
+          if (id === id_sumber) {
+            alert('ID tidak boleh sama dengan ID sumber untuk status Duplikat!');
+            return;
+          }
+          pool.push({ id, id_sumber, flag: 'Duplikat SWMAPS' });
+          showTempToast('Data duplikat SWMAPS tersimpan');
+          refreshPoolMarkers();
+        };
+        id_sumber = idInput ? (idInput.value.trim() || '-') : '-';
+        if (id_sumber === '-') return alert('ID sumber harus diisi untuk status Duplikat');
+        if (id && id === id_sumber) {
+          alert('ID tidak boleh sama dengan ID sumber untuk status Duplikat!');
+          return;
+        }
+        flag = 'Duplikat';
+      }
+
+      // push new relation: use new shape { id, id_sumber, flag }
+      pool.push({ id: id || '-', id_sumber: id_sumber || '-', flag: flag });
+      if (msg) msg.textContent = 'Tersimpan';
+      showTempToast('Data pool tersimpan');
+      refreshPoolMarkers();
+      setTimeout(()=> layer.closePopup(), 250);
+    };
+
+    if (btnBelum) btnBelum.onclick = () => {
+      pool.push({ id: id || '-', id_sumber: '-', flag: 'belum ditagging' });
+      if (msg) msg.textContent = 'Disimpan: belum ditagging';
+      showTempToast('Disimpan: belum ditagging');
+      refreshPoolMarkers();
+      setTimeout(()=> layer.closePopup(), 250);
+    };
+  }, 12);
+}
+
+/* =================================
+   Pool visual & refresh logic
+   ================================= */
+function isFeaturePooledForLayer(feature, layerType) {
+  const p = feature.properties || {};
+  if (layerType === 'matchapro') {
+    const idVal = (p.idsbr || p.IDSBR || p.IdSbr || p.id_sbr || p.id || '').toString();
+    // pooled if any pool entry references this id either as id or id_sumber
+    return pool.some(r => r.id === idVal || r.id_sumber === idVal);
+  } else {
+    const idVal = (getPropIgnoreCase(p, ['id','ID','IDS','Id']) || '').toString();
+    // pooled if any pool entry references this id as id_sumber or id
+    return pool.some(r => r.id_sumber === idVal || r.id === idVal);
+  }
+}
+
+function setMarkerHiddenByOpacity(marker, hidden) {
+  if (!marker) return;
+  if (hidden) {
+    marker.setStyle({ opacity: 0, fillOpacity: 0 });
+    const el = marker.getElement(); if (el) el.style.pointerEvents = 'none';
+  } else {
+    if (marker._isPooled) {
+      marker.setStyle({ color: POOL_BORDER, fillColor: POOL_FILL, fillOpacity: 0.95, opacity: 1, weight:1 });
+    } else if (marker._origStyle) {
+      marker.setStyle(Object.assign({}, marker._origStyle, { opacity: 1 }));
+    } else {
+      marker.setStyle({ opacity: 1, fillOpacity: marker.options.fillOpacity ?? 0.9 });
+    }
+    const el = marker.getElement(); if (el) el.style.pointerEvents = '';
+  }
+}
+
+function refreshPoolMarkers() {
+  // SWMAPS
+  swmapsLayer.eachLayer(marker => {
+    if (!marker.feature) return;
+    const isPooled = isFeaturePooledForLayer(marker.feature, 'swmaps');
+    marker._isPooled = !!isPooled;
+    if (isPooled) marker.setStyle({ color: POOL_BORDER, fillColor: POOL_FILL, fillOpacity: 0.95, weight:1, opacity: 1 });
+    else if (marker._origStyle) marker.setStyle(Object.assign({}, marker._origStyle, { opacity: 1 }));
+    if (isPooled) setMarkerHiddenByOpacity(marker, !pooledOverlayVisible); else setMarkerHiddenByOpacity(marker, false);
+  });
+
+  // KDM
+  kdmLayer.eachLayer(marker => {
+    if (!marker.feature) return;
+    const isPooled = isFeaturePooledForLayer(marker.feature, 'kdm');
+    marker._isPooled = !!isPooled;
+    if (isPooled) marker.setStyle({ color: POOL_BORDER, fillColor: POOL_FILL, fillOpacity: 0.95, weight:1, opacity: 1 });
+    else if (marker._origStyle) marker.setStyle(Object.assign({}, marker._origStyle, { opacity: 1 }));
+    if (isPooled) setMarkerHiddenByOpacity(marker, !pooledOverlayVisible); else setMarkerHiddenByOpacity(marker, false);
+  });
+
+  // Matchapro
+  matchaproLayer.eachLayer(marker => {
+    if (!marker.feature) return;
+    const isPooled = isFeaturePooledForLayer(marker.feature, 'matchapro');
+    marker._isPooled = !!isPooled;
+    if (isPooled) marker.setStyle({ color: POOL_BORDER, fillColor: POOL_FILL, fillOpacity: 0.95, weight:1, opacity: 1 });
+    else if (marker._origStyle) marker.setStyle(Object.assign({}, marker._origStyle, { opacity: 1 }));
+    if (isPooled) setMarkerHiddenByOpacity(marker, !pooledOverlayVisible); else setMarkerHiddenByOpacity(marker, false);
+  });
+}
+
+/* pool overlay hooks */
+poolOverlayGroup.on('add', () => { pooledOverlayVisible = true; refreshPoolMarkers(); });
+poolOverlayGroup.on('remove', () => { pooledOverlayVisible = false; refreshPoolMarkers(); });
+
+/* =================================
+   Popup global bindings (copy & undo)
+   ================================= */
+map.on('popupopen', (e) => {
+  setTimeout(() => {
+    const popupEl = e.popup.getElement(); if (!popupEl) return;
+    // copy
+    popupEl.querySelectorAll('[data-copy-id], .copy-icon').forEach(el => {
+      el.onclick = null;
+      try { el.removeEventListener('click', el._copyHandler); } catch(e){}
+      const handler = () => {
+        const attr = el.getAttribute('data-copy-id') || el.dataset.copyId;
+        if (attr) copyToClipboard(attr);
+        else {
+          const txt = el.previousElementSibling ? el.previousElementSibling.textContent : (el.innerText || el.textContent || '');
+          if (txt) copyToClipboard(txt.trim());
+        }
+      };
+      el._copyHandler = handler; el.addEventListener('click', handler);
+    });
+
+    // undo (works for MATCHAPRO, SWMAPS, KDM)
+    popupEl.querySelectorAll('.undo-icon').forEach(el => {
+      el.onclick = null;
+      try { el.removeEventListener('click', el._undoHandler); } catch(e){}
+      const handler = () => {
+        const layerType = el.getAttribute('data-layer') || el.dataset.layer;
+        if (!layerType) return;
+        if (String(layerType).toUpperCase() === 'MATCHAPRO') {
+          const idAttr = el.getAttribute('data-id') || el.dataset.id || '';
+          const idSumberAttr = el.getAttribute('data-id_sumber') || el.dataset.id_sumber || el.getAttribute('data-src') || el.dataset.src || '';
+          const flagAttr = el.getAttribute('data-flag') || el.dataset.flag || '';
+          // Remove matching relation(s) conservatively
+          pool = pool.filter(p => {
+            if (flagAttr && p.flag !== flagAttr) return true;
+            if (idAttr && p.id !== idAttr) return true;
+            if (idSumberAttr && p.id_sumber !== idSumberAttr) return true;
+            // otherwise remove
+            return false;
+          });
+        } else {
+          const id = el.getAttribute('data-id') || el.dataset.id || '';
+          if (!id) return;
+          pool = pool.filter(p => p.id_sumber !== id);
+        }
+        showTempToast('Data dihapus dari pool system');
+        refreshPoolMarkers();
+        try { e.popup._source.closePopup(); } catch(e){}
+      };
+      el._undoHandler = handler; el.addEventListener('click', handler);
+    });
+  }, 20);
+});
+
+/* =================================
+   Loading helpers
+   ================================= */
+function showLoading(text = 'Memuat data...') {
+  const overlay = document.getElementById('loading-overlay');
+  const loadingText = overlay.querySelector('.loading-text');
+  if (loadingText) loadingText.textContent = text;
+  overlay.style.display = 'flex';
+}
+
+function hideLoading() {
+  const overlay = document.getElementById('loading-overlay');
+  overlay.style.display = 'none';
+}
+
+/* =================================
+   File buttons & handlers (load/save etc.)
+   ================================= */
+document.addEventListener('DOMContentLoaded', () => {
+  document.getElementById('btnLoadPool').onclick = () => document.getElementById('filePool').click();
+  document.getElementById('btnSavePool').onclick = () => {
+    if (!pool || pool.length === 0) return alert('Pool kosong!');
+    const csv = poolToCSV(pool);
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'pool.csv'; a.click(); URL.revokeObjectURL(a.href);
+  };
+
+  document.getElementById('btnLoadSLS').onclick = () => document.getElementById('fileSLS').click();
+  document.getElementById('btnLoadPLKUMKM').onclick = () => document.getElementById('filePLKUKM').click();
+  document.getElementById('btnLoadMATCHAPRO').onclick = () => document.getElementById('fileMATCHAPRO').click();
+  document.getElementById('btnLoadSWMAPS').onclick = () => document.getElementById('fileSWMAPS').click();
+  document.getElementById('btnLoadKDM').onclick = () => document.getElementById('fileKDM').click();
+
+  // Pool load
+  document.getElementById('filePool').onchange = async (e) => {
+    const f = e.target.files[0]; if (!f) return;
+    showLoading('Memuat data Pool System...');
+    try {
+      const text = await f.text();
+      pool = csvToPool(text);
+      if (!map.hasLayer(poolOverlayGroup)) map.addLayer(poolOverlayGroup); // ensure overlay toggled on
+      refreshPoolMarkers();
+      // refresh open popups
+      matchaproLayer.eachLayer(l => { try { if (l.isPopupOpen && l.isPopupOpen()) buildMatchaproPopup(l, l.feature); } catch(e){} });
+      swmapsLayer.eachLayer(l => { try { if (l.isPopupOpen && l.isPopupOpen()) l.fire('popupopen'); } catch(e){} });
+      kdmLayer.eachLayer(l => { try { if (l.isPopupOpen && l.isPopupOpen()) l.fire('popupopen'); } catch(e){} });
+      showTempToast(`Pool dimuat (${pool.length} entri).`);
+    } catch (err) { 
+      console.warn(err); 
+      alert('Gagal memuat pool. Periksa format CSV.'); 
+    } finally {
+      hideLoading();
+    }
+  };
+
+  // SLS
+  document.getElementById('fileSLS').onchange = async (e) => {
+    const f = e.target.files[0]; if (!f) return;
+    showLoading('Memuat layer SLS...');
+    try {
+      const text = await f.text(); const json = JSON.parse(text);
+      slsLayer.clearLayers(); slsLayer.addData(json);
+      if (slsLayer.getLayers().length > 0) {
+        safeFitBounds(slsLayer);
+        slsSnapshot = slsLayer.getLayers().slice();
+        // populate kecamatan
+        const kec = new Set();
+        slsSnapshot.forEach(layer => {
+          const p = layer.feature?.properties || {};
+          const nm = getPropIgnoreCase(p, ['nmkec','Nama_Kec','kecamatan']) || '';
+          if (nm) kec.add(nm);
+        });
+        fillSelectFromSet('filterKec', kec, '--Pilih Kecamatan--');
+        fillSelectFromSet('filterDesa', new Set(), '--Pilih Desa--');
+        fillSelectFromSet('filterSLS', new Set(), '--Pilih SLS--');
+      }
+      showTempToast('Layer SLS berhasil dimuat');
+    } catch (err) { console.warn(err); alert('Error parsing SLS GeoJSON'); }
+    finally { hideLoading(); }
+  };
+
+  // PLKUMKM
+  document.getElementById('filePLKUKM').onchange = async (e) => {
+    const f = e.target.files[0]; if (!f) return;
+    showLoading('Memuat layer PLKUMKM...');
+    try {
+      const name = (f.name || '').toLowerCase(); const text = await f.text();
+      if (name.endsWith('.csv')) {
+        const parsed = Papa.parse(text, { header:true, skipEmptyLines:true });
+        const geo = csvRowsToGeoJSON(parsed.data);
+        plkLayer.clearLayers(); plkLayer.addData(geo); safeFitBounds(plkLayer);
+      } else {
+        const json = JSON.parse(text); plkLayer.clearLayers(); plkLayer.addData(json); safeFitBounds(plkLayer);
+      }
+      showTempToast('Layer PLKUMKM berhasil dimuat');
+    } catch (err) { console.warn(err); alert('Error memuat PLKUMKM'); }
+    finally { hideLoading(); }
+  };
+
+  // SWMAPS
+  document.getElementById('fileSWMAPS').onchange = async (e) => {
+    const f = e.target.files[0]; if (!f) return;
+    showLoading('Memuat layer SWMAPS...');
+    try {
+      const text = await f.text(); const parsed = Papa.parse(text, { header:true, skipEmptyLines:true }).data;
+      const geo = csvRowsToGeoJSON(parsed); swmapsLayer.clearLayers(); swmapsLayer.addData(geo); safeFitBounds(swmapsLayer); refreshPoolMarkers();
+      showTempToast('Layer SWMAPS berhasil dimuat');
+    } catch (err) { console.warn(err); alert('Error memuat SWMAPS'); }
+    finally { hideLoading(); }
+  };
+
+  // KDM
+  document.getElementById('fileKDM').onchange = async (e) => {
+    const f = e.target.files[0]; if (!f) return;
+    showLoading('Memuat layer KDM...');
+    try {
+      const text = await f.text(); const parsed = Papa.parse(text, { header:true, skipEmptyLines:true }).data;
+      const geo = csvRowsToGeoJSON(parsed); kdmLayer.clearLayers(); kdmLayer.addData(geo); safeFitBounds(kdmLayer); refreshPoolMarkers();
+      showTempToast('Layer KDM berhasil dimuat');
+    } catch (err) { console.warn(err); alert('Error memuat KDM'); }
+    finally { hideLoading(); }
+  };
+
+  // Matchapro
+  document.getElementById('fileMATCHAPRO').onchange = async (e) => {
+    const f = e.target.files[0]; if (!f) return;
+    showLoading('Memuat layer Matchapro...');
+    try {
+      const text = await f.text(); const parsed = Papa.parse(text, { header:true, skipEmptyLines:true }).data;
+      const geo = csvToGeoJSON_Matchapro(parsed); matchaproLayer.clearLayers(); matchaproLayer.addData(geo); safeFitBounds(matchaproLayer); refreshPoolMarkers();
+      showTempToast('Layer Matchapro berhasil dimuat');
+    } catch (err) { console.warn(err); alert('Error memuat Matchapro'); }
+    finally { hideLoading(); }
+  };
+
+  // Filters wiring
+  const selKec = document.getElementById('filterKec'), selDesa = document.getElementById('filterDesa'), selSLS = document.getElementById('filterSLS');
+  if (selKec) selKec.addEventListener('change', () => {
+    const v = selKec.value || '';
+    populateDesaByKecamatan(v);
+    populateSLSByDesa(v, '');
+    applyFilterAndZoom();
+  });
+  if (selDesa) selDesa.addEventListener('change', () => {
+    const k = selKec ? selKec.value : '';
+    const d = selDesa.value || '';
+    populateSLSByDesa(k, d);
+    applyFilterAndZoom();
+  });
+  if (selSLS) selSLS.addEventListener('change', applyFilterAndZoom);
+
+}); // DOMContentLoaded end
+
+/* =================================
+   Helper converters used above
+   ================================= */
+function csvRowsToGeoJSON(rows) {
+  const getVal = (obj, keys) => { for (const k of keys) if (obj[k] !== undefined && obj[k] !== '') return obj[k]; return null; };
+  const features = rows.map(r => {
+    const latRaw = getVal(r, ['latitude','Latitude','lat','Lat']);
+    const lonRaw = getVal(r, ['longitude','Longitude','lon','long','Lng']);
+    const lat = normalizeNumber(latRaw), lon = normalizeNumber(lonRaw);
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+    return { type:'Feature', geometry:{ type:'Point', coordinates:[lon,lat] }, properties: r };
+  }).filter(Boolean);
+  return { type:'FeatureCollection', features };
+}
+
+function csvToGeoJSON_Matchapro(rows) {
+  const features = rows.map(r => {
+    const lat = normalizeNumber(r.latitude || r.Latitude || r.lat);
+    const lon = normalizeNumber(r.longitude || r.Longitude || r.lon || r.long);
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+    const props = Object.assign({}, r);
+    // keep original idsbr field as the matchapro id
+    props.idsbr = r.idsbr || r.IDSBR || r.IdSbr || r.id_sbr || r.id || '';
+    props.nama_usaha = r.nama_usaha || r.Nama_Usaha || r.nama_komersial_usaha || r.nama || '';
+    props.alamat = r.alamat || r.Alamat || r.address || '';
+    return { type:'Feature', geometry:{ type:'Point', coordinates:[lon,lat] }, properties: props };
+  }).filter(Boolean);
+  return { type:'FeatureCollection', features };
+}
+
+/* =================================
+   Filters: populateDesaByKecamatan, populateSLSByDesa, applyFilterAndZoom
+   ================================= */
+
+function populateDesaByKecamatan(kecTerpilih) {
+  const desaSet = new Set();
+  slsSnapshot.forEach(layer => {
+    const p = layer.feature?.properties || {};
+    const k = getPropIgnoreCase(p, ['nmkec','Nama_Kec','kecamatan']) || '';
+    const d = getPropIgnoreCase(p, ['nmdesa','Nama_Desa','desa']) || '';
+    if (!kecTerpilih || String(k) === String(kecTerpilih)) {
+      if (d) desaSet.add(d);
+    }
+  });
+  fillSelectFromSet('filterDesa', desaSet, '--Pilih Desa--');
+}
+
+function populateSLSByDesa(kecTerpilih, desaTerpilih) {
+  const slsSet = new Set();
+  slsSnapshot.forEach(layer => {
+    const p = layer.feature?.properties || {};
+    const k = getPropIgnoreCase(p, ['nmkec','Nama_Kec','kecamatan']) || '';
+    const d = getPropIgnoreCase(p, ['nmdesa','Nama_Desa','desa']) || '';
+    const s = getPropIgnoreCase(p, ['nmsls','NMSLS','nmsls_name','Nama_SLS']) || '';
+    if ((!kecTerpilih || String(k) === String(kecTerpilih)) && (!desaTerpilih || String(d) === String(desaTerpilih))) {
+      if (s) slsSet.add(s);
+    }
+  });
+  fillSelectFromSet('filterSLS', slsSet, '--Pilih SLS--');
+}
+
+function fillSelectFromSet(id, setValues, placeholder) {
+  const sel = document.getElementById(id); if (!sel) return;
+  sel.innerHTML = '';
+  const opt0 = document.createElement('option'); opt0.value = ''; opt0.textContent = placeholder; sel.appendChild(opt0);
+  Array.from(setValues).filter(Boolean).sort((a,b)=>String(a).localeCompare(String(b))).forEach(v => {
+    const o = document.createElement('option'); o.value = v; o.textContent = v; sel.appendChild(o);
+  });
+}
+
+function applyFilterAndZoom() {
+  showLoading('Menerapkan filter...');
+  try {
+    const k = (document.getElementById('filterKec')?.value || '').toString();
+    const d = (document.getElementById('filterDesa')?.value || '').toString();
+    const s = (document.getElementById('filterSLS')?.value || '').toString();
+    const visible = [];
+    slsSnapshot.forEach(layer => {
+    const p = layer.feature?.properties || {};
+    const nameK = getPropIgnoreCase(p, ['nmkec','Nama_Kec','kecamatan']) || '';
+    const nameD = getPropIgnoreCase(p, ['nmdesa','Nama_Desa','desa']) || '';
+    const nameS = getPropIgnoreCase(p, ['nmsls','NMSLS','nmsls_name','Nama_SLS']) || '';
+    const match = (!k || String(nameK) === String(k)) && (!d || String(nameD) === String(d)) && (!s || String(nameS) === String(s));
+    if (match) {
+      if (!slsLayer.hasLayer(layer)) slsLayer.addLayer(layer);
+      visible.push(layer);
+    } else {
+      if (slsLayer.hasLayer(layer)) slsLayer.removeLayer(layer);
+    }
+  });
+  if (visible.length > 0) {
+    const group = L.featureGroup(visible);
+    try { map.fitBounds(group.getBounds(), { padding:[20,20] }); } catch(e) {}
+  }
+  slsLayer.bringToBack();
+  } finally {
+    hideLoading();
+    showTempToast('Filter berhasil diterapkan');
+  }
+}
+
+/* =================================
+   End
+   ================================= */
+</script>
+</body>
+</html>
