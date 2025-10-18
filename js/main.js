@@ -1,55 +1,3 @@
-<!doctype html>
-<html lang="id">
-<head>
-  <meta charset="utf-8" />
-  <title>WebGIS - Direktori Usaha (PWA)</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
-  <link rel="stylesheet" href="css/style.css" />
-  <link rel="manifest" href="manifest.json" />
-  <meta name="theme-color" content="#2196f3" />
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
-  <script src="https://unpkg.com/papaparse@5.4.1/papaparse.min.js"></script>
-</head>
-<body>
-<!-- Loading Overlay -->
-  <div id="loading-overlay" class="loading-overlay">
-    <div class="loading-content">
-      <div class="loading-spinner"></div>
-      <div class="loading-text">Memuat data...</div>
-    </div>
-  </div>
-
-  <div id="toolbar">   
-
-    <!-- Layers -->
-    <button id="btnLoadSLS">📂 SLS (GeoJSON)</button>
-    <button id="btnLoadPLKUMKM">📂 PLKUMKM</button>
-    <button id="btnLoadMATCHAPRO">📂 Matchapro</button>
-    <button id="btnLoadSWMAPS">📂 SWMAPS</button>
-    <button id="btnLoadKDM">📂 KDM</button>
-
-    <!-- Pool -->
-    <button id="btnLoadPool">📂 Load Pool</button>
-    <button id="btnSavePool">💾 Simpan Pool</button>
-	
-	<!-- Filters -->
-    <select id="filterKec"><option value="">--Pilih Kecamatan--</option></select>
-    <select id="filterDesa"><option value="">--Pilih Desa--</option></select>
-    <select id="filterSLS"><option value="">--Pilih SLS--</option></select>
-
-    <!-- Hidden file inputs -->
-    <input type="file" id="filePool" accept=".csv,text/csv" style="display:none" />
-    <input type="file" id="fileSLS" accept=".geojson,application/geo+json,application/json" style="display:none" />
-    <input type="file" id="filePLKUKM" accept=".geojson,application/geo+json,application/json,.csv,text/csv" style="display:none" />
-    <input type="file" id="fileMATCHAPRO" accept=".csv,text/csv" style="display:none" />
-    <input type="file" id="fileSWMAPS" accept=".csv,text/csv" style="display:none" />
-    <input type="file" id="fileKDM" accept=".csv,text/csv,.geojson,application/geo+json,application/json" style="display:none" />
-  </div>
-
-  <div id="map"></div>
-
-<script>
 /* =================================
    State & Utilities (refactor pool -> {id, id_sumber, flag})
    ================================= */
@@ -1067,16 +1015,13 @@ function applyFilterAndZoom() {
 /* =================================
    End
    ================================= */
-</script>
 
-<script src="js/utils.js"></script>
-<script src="js/layers.js"></script>
-<script src="js/main.js"></script>
-
-<script>
-if ('serviceWorker' in navigator) {
-  navigator.serviceWorker.register('/service-worker.js').then(function(){ console.log('Service Worker registered.'); }).catch(function(err){ console.warn('SW register failed', err); });
+// Auto-load on DOMContentLoaded
+if (typeof window !== 'undefined') {
+  document.addEventListener('DOMContentLoaded', function() {
+    if (typeof autoLoadAll === 'function') {
+      console.log('Auto-loading layers (if reachable)...');
+      setTimeout(autoLoadAll, 300);
+    }
+  });
 }
-</script>
-</body>
-</html>
