@@ -26,7 +26,7 @@ self.addEventListener('fetch', event => {
   const url = new URL(event.request.url);
   if (event.request.mode === 'navigate') {
     event.respondWith(
-      caches.match('/index.html').then(resp => resp || fetch(event.request))
+      caches.match('./index.html').then(resp => resp || fetch(event.request))
     );
     return;
   }
