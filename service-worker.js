@@ -1,16 +1,17 @@
 const CACHE_NAME = 'webgis-v1';
 const RUNTIME_CACHE = 'webgis-runtime';
 const STATIC_ASSETS = [
-  '/',
-  '/index.html',
-  '/css/style.css',
-  '/js/utils.js',
-  '/js/layers.js',
-  '/js/main.js',
+  './',
+  './index.html',
+  './css/style.css',
+  './js/utils.js',
+  './js/layers.js',
+  './js/main.js',
   'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css',
   'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js',
   'https://unpkg.com/papaparse@5.4.1/papaparse.min.js'
 ];
+
 
 self.addEventListener('install', event => {
   event.waitUntil(caches.open(CACHE_NAME).then(cache => cache.addAll(STATIC_ASSETS)));
