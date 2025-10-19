@@ -7,6 +7,9 @@
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
   <script src="https://unpkg.com/papaparse@5.4.1/papaparse.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/idb@7/build/umd.js"></script>
+  <script src="js/layer-cache.js"></script>
+
 
   <style>
     html, body { height:100%; margin:0; }
@@ -69,6 +72,10 @@
     .duplicate-form input { padding:4px 6px; width:120px; }
     .duplicate-form button { padding:4px 8px; font-size:13px; }
   </style>
+
+  <base href="./">
+  <link rel="manifest" href="./manifest.json">
+  <script src="https://unpkg.com/idb@7/build/iife/index-min.js"></script>
 </head>
 <body>
   <!-- Loading Overlay -->
@@ -1127,5 +1134,14 @@ function applyFilterAndZoom() {
    End
    ================================= */
 </script>
+
+<script>
+console.log('[WebGIS] App initialized.');
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('./service-worker.js').then(()=>console.log('[PWA] Service Worker registered.')).catch(e=>console.warn('[PWA] SW reg failed',e));
+}
+</script>
+<script src="./js/layer-cache.js"></script>
+
 </body>
 </html>
