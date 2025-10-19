@@ -1,61 +1,47 @@
-/* utils.js - small IndexedDB wrapper and fetchWithCache */
-function openIdb(dbName, storeName) {
-  return new Promise((resolve, reject) => {
-    const req = indexedDB.open(dbName, 1);
-    req.onupgradeneeded = (e) => {
-      const db = e.target.result;
-      if (!db.objectStoreNames.contains(storeName)) {
-        db.createObjectStore(storeName);
-      }
-    };
-    req.onsuccess = (e) => resolve(e.target.result);
-    req.onerror = (e) => reject(e.target.error);
-  });
-}
 
-async function idbPut(dbName, storeName, key, value) {
-  const db = await openIdb(dbName, storeName);
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(storeName, 'readwrite');
-    const store = tx.objectStore(storeName);
-    const req = store.put(value, key);
-    req.onsuccess = () => { resolve(true); db.close(); };
-    req.onerror = (e) => { reject(e.target.error); db.close(); };
-  });
-}
-
-async function idbGet(dbName, storeName, key) {
-  const db = await openIdb(dbName, storeName);
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(storeName, 'readonly');
-    const store = tx.objectStore(storeName);
-    const req = store.get(key);
-    req.onsuccess = (e) => { resolve(e.target.result); db.close(); };
-    req.onerror = (e) => { reject(e.target.error); db.close(); };
-  });
-}
-
-/**
- * fetchWithCache(url, key, options)
- * - attempts network fetch; on success stores text response in IndexedDB under key
- * - on network failure returns cached value (string) or null
- */
-async function fetchWithCache(url, key, options={}) {
-  const DB = 'webgis-cache';
-  const STORE = 'layers';
-  try {
-    const res = await fetch(url, options);
-    if (!res.ok) throw new Error('Network response not ok: ' + res.status);
-    const text = await res.text();
-    try { await idbPut(DB, STORE, key, { data: text, ts: Date.now(), url }); } catch(e){}
-    return text;
-  } catch (e) {
-    // fallback to cached
-    try {
-      const cached = await idbGet(DB, STORE, key);
-      return cached ? cached.data : null;
-    } catch(err) {
-      return null;
-    }
+const DB_NAME = 'webgis_v8_db';
+const DB_VERSION = 1;
+const STORE_LAYERS = 'layers';
+async function openDb() {
+  if (!window.idb) {
+    console.warn('idb library not found, falling back to simple storage');
+    return null;
   }
+  const db = await idb.openDB(DB_NAME, DB_VERSION, {
+    upgrade(db) {
+      if (!db.objectStoreNames.contains(STORE_LAYERS)) {
+        db.createObjectStore(STORE_LAYERS);
+      }
+    }
+  });
+  return db;
+}
+async function saveLayerToIDB(key, text) {
+  const db = await openDb();
+  if (!db) {
+    localStorage.setItem('cache_' + key, text);
+    return true;
+  }
+  await db.put(STORE_LAYERS, text, key);
+  return true;
+}
+async function loadLayerFromIDB(key) {
+  const db = await openDb();
+  if (!db) {
+    return localStorage.getItem('cache_' + key);
+  }
+  const res = await db.get(STORE_LAYERS, key);
+  return res;
+}
+async function clearAllLayerCache() {
+  const db = await openDb();
+  if (!db) {
+    Object.keys(localStorage).forEach(k => { if (k.startsWith('cache_')) localStorage.removeItem(k); });
+    return;
+  }
+  const tx = db.transaction(STORE_LAYERS, 'readwrite');
+  const store = tx.objectStore(STORE_LAYERS);
+  const keys = await store.getAllKeys();
+  for (const k of keys) { await store.delete(k); }
+  await tx.done;
 }

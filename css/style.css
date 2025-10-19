@@ -1,60 +1,17 @@
-/* style.css - extracted from test.v7.html */
-html, body { height:100%; margin:0; }
-    #toolbar { padding:8px 12px; background:#fff; border-bottom:1px solid #ddd; display:flex; flex-wrap:wrap; gap:8px; align-items:center; font-family:system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif; z-index:1000; }
-    #map { width:100%; height:calc(100% - 56px); }
-    select { padding:6px; min-width:160px; }
-    button { padding:6px 8px; }
-    button:disabled { opacity:0.6; cursor:not-allowed; }
-    .small-input { width:160px; padding:6px; }
-    .pool-ui { margin-top:6px; border-top:1px dashed #ddd; padding-top:6px; font-size:13px; }
-    
-    /* Loading Overlay */
-    .loading-overlay {
-      position: fixed;
-      top: 0;
-      left: 0;
-      width: 100%;
-      height: 100%;
-      background: rgba(255, 255, 255, 0.8);
-      display: none;
-      justify-content: center;
-      align-items: center;
-      z-index: 9999;
-    }
-    .loading-content {
-      text-align: center;
-      background: white;
-      padding: 20px 40px;
-      border-radius: 8px;
-      box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-    }
-    .loading-spinner {
-      border: 4px solid #f3f3f3;
-      border-radius: 50%;
-      border-top: 4px solid #3498db;
-      width: 40px;
-      height: 40px;
-      margin: 0 auto 10px;
-      animation: spin 1s linear infinite;
-    }
-    .loading-text {
-      color: #333;
-      font-size: 14px;
-      font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
-    }
-    @keyframes spin {
-      0% { transform: rotate(0deg); }
-      100% { transform: rotate(360deg); }
-    }
-    .pool-ui-item { display:flex; align-items:center; margin:4px 0; }
-    .pool-ui-flag { flex:1; }
-    .pool-ui-actions { display:flex; gap:4px; align-items:center; }
-    .copy-icon, .undo-icon { cursor:pointer; margin-left:6px; color:#0b5ed7; user-select:none; }
-    .undo-icon:hover { color:#d00; }
-    #__copy_toast { position:fixed; right:16px; bottom:16px; background:rgba(0,0,0,0.85); color:white; padding:8px 12px; border-radius:6px; z-index:999999; font-family:sans-serif; }
-    .legend { background:rgba(255,255,255,0.95); padding:8px 10px; border-radius:6px; font-family:sans-serif; font-size:13px; box-shadow:0 1px 5px rgba(0,0,0,0.3); line-height:1.4; }
-    .legend-item { display:flex; align-items:center; gap:6px; margin:3px 0; }
-    .legend-color { width:14px; height:14px; border-radius:3px; border:1px solid #555; }
-    .duplicate-form { margin-top:8px; display:flex; gap:6px; align-items:center; }
-    .duplicate-form input { padding:4px 6px; width:120px; }
-    .duplicate-form button { padding:4px 8px; font-size:13px; }
+
+body { margin:0; font-family: system-ui, Arial, sans-serif; }
+header { background:#2196f3; color:white; padding:10px 16px; }
+main { display:flex; height: calc(100vh - 92px); }
+#sidebar { width:280px; padding:12px; background:#f7f7f7; box-shadow:2px 0 6px rgba(0,0,0,0.06); overflow:auto; }
+#map-wrap { flex:1; position:relative; }
+#map { height:100%; }
+.layer-list { display:flex; flex-direction:column; gap:6px; }
+.layer-item { display:flex; align-items:center; gap:8px; padding:6px; background:white; border-radius:6px; box-shadow:0 0 0 1px rgba(0,0,0,0.02); }
+.layer-item button.upload { margin-left:auto; font-size:12px; }
+.loading { display:none; position:absolute; top:10px; left:50%; transform:translateX(-50%); background:rgba(0,0,0,0.7); color:white; padding:6px 10px; border-radius:6px; z-index:9999; }
+footer { padding:8px 12px; font-size:12px; color:#666; background:#fff; border-top:1px solid #eee; }
+@media (max-width:720px) {
+  #sidebar { width:100%; height:180px; order:2; }
+  main { flex-direction:column; }
+  #map-wrap { order:1; height:calc(100vh - 180px - 92px); }
+}

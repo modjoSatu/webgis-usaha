@@ -1,0 +1,1 @@
+webgis-pwa-v8-basic: PWA migration of test.v7.html with IndexedDB per-layer cache. Service worker caches app shell. Uploaded files auto-saved to cache.
