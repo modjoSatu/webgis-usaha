@@ -2,28 +2,24 @@
 <html lang="id">
 <head>
   <meta charset="utf-8" />
-  <title>WebGIS - Direktori Usaha v8 (Inline Worker + Responsive DataTables)</title>
+  <title>WebGIS - Direktori Usaha v8 (fixed)</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <!-- Leaflet -->
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
-
   <!-- PapaParse -->
   <script src="https://unpkg.com/papaparse@5.4.1/papaparse.min.js"></script>
-
-  <!-- jQuery + DataTables + Scroller (untuk virtual scrolling) -->
-  <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+  <!-- DataTables -->
   <link rel="stylesheet" href="https://cdn.datatables.net/1.13.6/css/jquery.dataTables.min.css">
+  <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
   <script src="https://cdn.datatables.net/1.13.6/js/jquery.dataTables.min.js"></script>
-  <script src="https://cdn.datatables.net/scroller/2.2.0/js/dataTables.scroller.min.js"></script>
-  <link rel="stylesheet" href="https://cdn.datatables.net/scroller/2.2.0/css/scroller.dataTables.min.css">
 
   <style>
     html, body { height:100%; margin:0; }
     #map { width:100%; height:100%; }
 
-    /* Toolbar utama */
+    /* Toolbar utama (tetap konsisten) */
     #toolbar {
       position: absolute;
       top: 10px;
@@ -49,6 +45,7 @@
     button { padding:6px 8px; }
     button:disabled { opacity:.6; cursor:not-allowed; }
 
+    /* Ikon umum */
     .copy-icon, .undo-icon { cursor:pointer; margin-left:6px; color:#0b5ed7; user-select:none; }
     .undo-icon:hover { color:#d00; }
 
@@ -186,7 +183,7 @@
     <!-- hidden inputs -->
     <input type="file" id="filePool" style="display:none" />
     <input type="file" id="fileSLS" style="display:none" />
-    <input type="file" id="filePLKUKM" style="display:none" />
+    <input type="file" id="filePLKUMKM" style="display:none" />
     <input type="file" id="fileMATCHAPRO" style="display:none" />
     <input type="file" id="fileSWMAPS" style="display:none" />
     <input type="file" id="fileKDM" style="display:none" />
@@ -230,7 +227,7 @@
             <tr>
               <th>id</th>
               <th>Nama Usaha</th>
-              <th>Matchapro (id & nama)</th>
+              <th>Matchapro</th>
               <th>KDM</th>
               <th>SWMAPS</th>
               <th>% Kemiripan</th>
@@ -306,7 +303,7 @@ const poolIndex = { byId:new Map(), bySource:new Map(), keyed:new Set() };
 let slsSnapshot = [];
 let pooledOverlayVisible = false;
 
-/* similarityArray: checkpoint progres similarity worker
+/* similarityArray: checkpoint progres runSimilarityWorker
    format: { idsbr, sumber, id, percent, distance } */
 let similarityArray = [];
 
@@ -330,7 +327,7 @@ const RADIUS_DEFAULT_M = 1000;
 /* Threshold similarity (ubah dari UI) */
 let currentThresholdPct = 60;
 
-/* Grid spasial derajat tetap (~1.1km di ekuator; untuk Jawa Timur cukup bijak) */
+/* Grid spasial (~1.1km di ekuator) */
 const GRID_CELL_DEG = 0.01;
 
 /* Warna garis koneksi kandidat */
@@ -362,7 +359,7 @@ function getPropIgnoreCase(obj, candidates) {
 function escapeId(s) { return String(s).replace(/[^a-z0-9_\-]/gi, '_') || 'noid'; }
 
 /* ============================================================
-   Normalisasi nama usaha
+   Normalisasi nama usaha — DRY & KISS (diperkuat)
    ============================================================ */
 const BUSINESS_FORMS = ['pt','cv','ud','firma','kop','koperasi','bumn','bumd','tbk','po','pd','pm','cv.','pt.','ud.'];
 const GENERIC_WORDS = ['toko','warung','mart','minimarket','supermarket','usaha','kedai','kios','resto','rumah','makan','rm','rm.','cafe','kafe','jual','jual-beli'];
@@ -408,12 +405,12 @@ function rebuildPoolIndex() {
   for (const r of pool) {
     const idStr = String(r.id || '').trim();
     const srcStr = String(r.id_sumber || '').trim();
-    if (idStr && idStr !== '-') {
+    if (idStr) {
       poolIndex.keyed.add(idStr);
       const arr = poolIndex.byId.get(idStr) || [];
       arr.push(r); poolIndex.byId.set(idStr, arr);
     }
-    if (srcStr && srcStr !== '-') {
+    if (srcStr) {
       poolIndex.keyed.add(srcStr);
       const arr2 = poolIndex.bySource.get(srcStr) || [];
       arr2.push(r); poolIndex.bySource.set(srcStr, arr2);
@@ -429,14 +426,6 @@ function pushPool(entry) {
     showTempToast('ID tidak boleh sama dengan ID sumber untuk status Duplikat!', 2000);
     return false;
   }
-  if (id === '-' && !['SWMAPS Pool','KDM Pool','belum ditagging','Tutup'].includes(flag)) {
-    showTempToast('ID tidak valid untuk relasi ini.');
-    return false;
-  }
-  if (id_sumber === '-' && !['belum ditagging','Tutup'].includes(flag)) {
-    showTempToast('ID sumber harus diisi untuk relasi ini.');
-    return false;
-  }
   const existingById = poolIndex.byId.get(id) || [];
   const exists = existingById.some(p => String(p.id_sumber)===id_sumber && String(p.flag)===flag);
   if (exists) { showTempToast('Relasi sudah ada di pool'); return false; }
@@ -444,12 +433,12 @@ function pushPool(entry) {
   const newEntry = { id, id_sumber, flag };
   pool.push(newEntry);
 
-  if (id && id !== '-') {
+  if (id) {
     poolIndex.keyed.add(id);
     const arr = poolIndex.byId.get(id) || [];
     arr.push(newEntry); poolIndex.byId.set(id, arr);
   }
-  if (id_sumber && id_sumber !== '-') {
+  if (id_sumber) {
     poolIndex.keyed.add(id_sumber);
     const arr2 = poolIndex.bySource.get(id_sumber) || [];
     arr2.push(newEntry); poolIndex.bySource.set(id_sumber, arr2);
@@ -458,7 +447,7 @@ function pushPool(entry) {
 }
 
 /* ============================================================
-   Map & base layers
+   Map & base layers (tetap)
    ============================================================ */
 const map = L.map('map').setView([-7.82,112.02], 12);
 const osm = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(map);
@@ -494,7 +483,7 @@ const plkLayer = L.geoJSON(null, {
   }
 }).addTo(map);
 
-/* Helper marker builder */
+/* Helper marker builder (menjaga style asli) */
 function createMarkerWithOrig(latlng, style) {
   const m = L.circleMarker(latlng, style);
   m._origStyle = Object.assign({}, style);
@@ -526,7 +515,7 @@ const matchaproLayer = L.geoJSON(null, {
   }
 }).addTo(map);
 
-/* Layer control & legend */
+/* Layer control & legend (tetap) */
 const poolOverlayGroup = L.layerGroup();
 const overlays = {
   'SLS (Polygon)': slsLayer,
@@ -886,7 +875,7 @@ function buildMatchaproPopup(layer, feature) {
 }
 
 /* ============================================================
-   Pool visual & refresh logic — SELECTIVE
+   Pool visual & refresh logic
    ============================================================ */
 function getFeatureIdByLayerType(feature, layerType) {
   const p = feature?.properties || {};
@@ -1061,7 +1050,6 @@ function rebuildCandidatesFromCheckpoint() {
   });
 }
 
-/* File inputs */
 document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('btnLoadPool').onclick = () => document.getElementById('filePool').click();
   document.getElementById('btnSavePool').onclick = () => {
@@ -1072,7 +1060,7 @@ document.addEventListener('DOMContentLoaded', () => {
   };
 
   document.getElementById('btnLoadSLS').onclick = () => document.getElementById('fileSLS').click();
-  document.getElementById('btnLoadPLKUMKM').onclick = () => document.getElementById('filePLKUKM').click();
+  document.getElementById('btnLoadPLKUMKM').onclick = () => document.getElementById('filePLKUMKM').click();
   document.getElementById('btnLoadMATCHAPRO').onclick = () => document.getElementById('fileMATCHAPRO').click();
   document.getElementById('btnLoadSWMAPS').onclick = () => document.getElementById('fileSWMAPS').click();
   document.getElementById('btnLoadKDM').onclick = () => document.getElementById('fileKDM').click();
@@ -1120,7 +1108,7 @@ document.addEventListener('DOMContentLoaded', () => {
     finally { showLoadingOverlay(false); }
   };
 
-  document.getElementById('filePLKUKM').onchange = async (e) => {
+  document.getElementById('filePLKUMKM').onchange = async (e) => {
     const f = e.target.files[0]; if (!f) return;
     try {
       showLoadingOverlay(true);
@@ -1357,7 +1345,7 @@ function applyFilterAndZoom() {
 }
 
 /* ============================================================
-   Summary table & SLS membership mapping (inline worker PIP)
+   Summary table & SLS membership mapping (worker)
    ============================================================ */
 let workerTable = null;
 function spawnWorkerTableForSummary() {
@@ -1366,73 +1354,64 @@ function spawnWorkerTableForSummary() {
   const matchFeatures = matchaproLayer.toGeoJSON().features || [];
   const payload = { sls: slsFeatures, match: matchFeatures };
 
+  /* Worker point-in-polygon (fixed loop) */
   const workerCode = `
     self.onmessage = function(e) {
-      const sls = e.data.sls || [];
-      const match = e.data.match || [];
+      var sls = e.data.sls || [];
+      var match = e.data.match || [];
       function pointInRing(x, y, ring) {
-        let inside = false;
-        for (let i=0,j=ring.length-1; i<ring.length; j=i++) {
-          const xi = ring[i][0], yi = ring[i][1];
-          const xj = ring[j][0], yj = ring[j][1];
-          const intersect = ((yi>y)!==(yj>y)) && (x < (xj-xi)*(y-yi)/(yj-yi)+xi);
+        var inside = false;
+        for (var i = 0, j = ring.length - 1; i < ring.length; j = i, i++) {
+          var xi = ring[i][0], yi = ring[i][1];
+          var xj = ring[j][0], yj = ring[j][1];
+          var intersect = ((yi > y) !== (yj > y)) && (x < (xj - xi) * (y - yi) / (yj - yi) + xi);
           if (intersect) inside = !inside;
         }
         return inside;
       }
-      function pointInPolygon(x, y, coords) {
-        const outer = coords[0] || [];
-        if (!outer.length) return false;
-        if (!pointInRing(x,y,outer)) return false;
-        for (let h=1; h<coords.length; h++) {
-          const hole = coords[h] || [];
-          if (hole.length && pointInRing(x,y,hole)) return false;
-        }
-        return true;
-      }
-      const slsIndex = [];
-      sls.forEach(f=>{
-        const geom = f.geometry;
+      var out = [];
+      var slsIndex = [];
+      sls.forEach(function(f){
+        var geom = f.geometry;
         if (!geom) return;
         if (geom.type === 'Polygon') {
-          const rings = geom.coordinates || [];
-          const outer = rings[0] || [];
-          if (!outer.length) return;
-          let minx=1e9,miny=1e9,maxx=-1e9,maxy=-1e9;
-          outer.forEach(c=>{ minx=Math.min(minx,c[0]); maxx=Math.max(maxx,c[0]); miny=Math.min(miny,c[1]); maxy=Math.max(maxy,c[1]); });
-          slsIndex.push({ feature:f, rings, bbox:[minx,miny,maxx,maxy] });
+          var ring = geom.coordinates[0] || [];
+          if (!ring.length) return;
+          var minx=1e9,miny=1e9,maxx=-1e9,maxy=-1e9;
+          ring.forEach(function(c){ minx=Math.min(minx,c[0]); maxx=Math.max(maxx,c[0]); miny=Math.min(miny,c[1]); maxy=Math.max(maxy,c[1]); });
+          slsIndex.push({ feature:f, ring:ring, bbox:[minx,miny,maxx,maxy] });
         } else if (geom.type === 'MultiPolygon') {
-          const polys = geom.coordinates || [];
-          polys.forEach(poly=>{
-            const rings = poly || [];
-            const outer = (rings[0] || []);
-            if (!outer.length) return;
-            let minx=1e9,miny=1e9,maxx=-1e9,maxy=-1e9;
-            outer.forEach(c=>{ minx=Math.min(minx,c[0]); maxx=Math.max(maxx,c[0]); miny=Math.min(miny,c[1]); maxy=Math.max(maxy,c[1]); });
-            slsIndex.push({ feature:f, rings, bbox:[minx,miny,maxx,maxy] });
+          var polys = geom.coordinates || [];
+          polys.forEach(function(poly){
+            var ring = (poly && poly[0]) || [];
+            if (!ring.length) return;
+            var minx=1e9,miny=1e9,maxx=-1e9,maxy=-1e9;
+            ring.forEach(function(c){ minx=Math.min(minx,c[0]); maxx=Math.max(maxx,c[0]); miny=Math.min(miny,c[1]); maxy=Math.max(maxy,c[1]); });
+            slsIndex.push({ feature:f, ring:ring, bbox:[minx,miny,maxx,maxy] });
           });
         }
       });
-      const out = [];
-      for (let i=0;i<match.length;i++) {
-        const m = match[i];
-        const lon = m.geometry?.coordinates?.[0] ?? null;
-        const lat = m.geometry?.coordinates?.[1] ?? null;
+      for (var i=0;i<match.length;i++) {
+        var m = match[i];
+        var lon = (m.geometry && m.geometry.coordinates) ? m.geometry.coordinates[0] : null;
+        var lat = (m.geometry && m.geometry.coordinates) ? m.geometry.coordinates[1] : null;
         if (lon==null || lat==null) continue;
-        let found = { kecamatan:'', desa:'', nmsls:'' };
-        for (let s of slsIndex) {
-          const [minx,miny,maxx,maxy] = s.bbox;
+        var found = { kecamatan:'', desa:'', nmsls:'' };
+        for (var si=0; si<slsIndex.length; si++) {
+          var s = slsIndex[si];
+          var minx=s.bbox[0], miny=s.bbox[1], maxx=s.bbox[2], maxy=s.bbox[3];
           if (lon < minx || lon > maxx || lat < miny || lat > maxy) continue;
-          if (pointInPolygon(lon, lat, s.rings)) {
-            const p = s.feature.properties || {};
-            const kec = p.nmkec || p.Nama_Kec || p.kecamatan || p.NAMA_KEC || '';
-            const desa = p.nmdesa || p.Nama_Desa || p.desa || '';
-            const nmsls = p.nmsls || p.NMSLS || p.nmsls_name || p.Nama_SLS || '';
+          if (pointInRing(lon, lat, s.ring)) {
+            var p = s.feature.properties || {};
+            var kec = p.nmkec || p.Nama_Kec || p.kecamatan || p.NAMA_KEC || '';
+            var desa = p.nmdesa || p.Nama_Desa || p.desa || '';
+            var nmsls = p.nmsls || p.NMSLS || p.nmsls_name || p.Nama_SLS || '';
             found = { kecamatan:(kec||''), desa:(desa||''), nmsls:(nmsls||'') };
             break;
           }
         }
-        out.push({ id: (m.properties && (m.properties.idsbr || m.properties.IDSBR || m.properties.id_sbr || m.properties.id)) || '', kecamatan: found.kecamatan, desa: found.desa, nmsls: found.nmsls });
+        var idv = (m.properties && (m.properties.idsbr || m.properties.IDSBR || m.properties.id_sbr || m.properties.id)) || '';
+        out.push({ id: idv, kecamatan: found.kecamatan, desa: found.desa, nmsls: found.nmsls });
       }
       postMessage({ type:'done', data: out });
     };`;
@@ -1457,13 +1436,8 @@ function spawnWorkerTableForSummary() {
 }
 
 /* ============================================================
-   Summary DataTable (UI & UX) — Responsive mitigations
-   - Incremental append: rows.add() + draw(false)
-   - Batch adaptif: default 500
-   - Deferred render + Scroller untuk virtual scrolling
+   Summary DataTable (UI & UX)
    ============================================================ */
-const SUMMARY_APPEND_BATCH = 500; // batch besar/adaptif untuk performa
-
 function initSummaryDataTable() {
   summaryTableInstance = $('#summaryTable').DataTable({
     data: [],
@@ -1526,24 +1500,26 @@ function initSummaryDataTable() {
       { data: 'sls' },
       { data: 'action', orderable:false, searchable:false }
     ],
-    deferRender: true,          // render malas untuk performa
     scrollX: true,
-    scroller: true,             // virtual scrolling (render baris yang terlihat)
-    stateSave: false,           // hindari serialize besar
-    pageLength: 25              // sedikit lebih besar, tetap nyaman
+    pageLength: 10,
+    deferRender: true
   });
 
-  // Delegasi event interaktif
+  /* Delegasi klik: zoom + garis koneksi */
   $('#summaryTable').on('click', 'a.zoomTo', function(e) {
     e.preventDefault();
     const id = this.dataset.id;
     zoomToMatchaproById(id);
     buildConnectionLinesForId(id);
   });
+
+  /* Buka modal dari kolom kandidat */
   $('#summaryTable').on('click', 'span.openSim', function() {
     const id = this.dataset.id;
     showSimilarityModalForId(id);
   });
+
+  /* Expand/collapse child detail (grouping) */
   $('#summaryTable').on('click', '.expand-icon', function() {
     const id = this.dataset.id;
     const tr = $(this).closest('tr');
@@ -1562,6 +1538,8 @@ function initSummaryDataTable() {
       row.child(childHtml).show();
     }
   });
+
+  /* Save/Delete placeholders untuk similarityArray */
   $('#summaryTable').on('click', 'span.save-icon', function() {
     const id = this.dataset.id;
     const existing = similarityArray.find(x=>x.idsbr===id);
@@ -1572,7 +1550,6 @@ function initSummaryDataTable() {
       showTempToast('Similarity sudah ada');
     }
     rebuildCandidatesFromCheckpoint();
-    // Incremental: tambah satu baris jika perlu, lalu draw(false)
     refreshSummaryTableFromLayers();
   });
   $('#summaryTable').on('click', 'span.del-icon', function() {
@@ -1712,7 +1689,7 @@ function buildChildDetailHTML(idsbr) {
 }
 
 /* ============================================================
-   Modal Kandidat — tampilkan kandidat >25% + tombol aksi
+   Modal Kandidat
    ============================================================ */
 function showSimilarityModalForId(idsbr) {
   const modal = document.getElementById('similarityModal');
@@ -1846,7 +1823,7 @@ function levenshtein(a, b) {
       const cost = a[i] === b[j] ? 0 : 1;
       v1[j+1] = Math.min(v1[j]+1, v0[j+1]+1, v0[j]+cost);
     }
-    for (let j=0;j<=bl;j++) v0[j]=v1[j];
+    for (let j2=0;j2<=bl;j2++) v0[j2]=v1[j2];
   }
   return v1[bl];
 }
@@ -1873,7 +1850,7 @@ function haversine(lat1,lon1,lat2,lon2) {
 }
 
 /* ============================================================
-   Summary table builder — flat & grouped (incremental append)
+   Summary table builder — flat & grouped
    ============================================================ */
 function refreshSummaryTableFromLayers() {
   if (!summaryTableInstance) return;
@@ -1915,7 +1892,7 @@ function refreshSummaryTableFromLayers() {
       });
     }
 
-    // Pool-based rows
+    /* Pool-based rows */
     const rels = poolIndex.byId.get(id) || [];
     rels.forEach(r => {
       const key = `${id}|${r.flag}|${r.id_sumber}`;
@@ -1962,7 +1939,7 @@ function refreshSummaryTableFromLayers() {
       seen.add(key);
     });
 
-    // Similarity-based rows (≥ threshold)
+    /* Similarity-based rows (≥ currentThresholdPct) */
     const cands = similarityCandidatesMap.get(id) || [];
     cands.forEach(c => {
       if (c.percent < currentThresholdPct) return;
@@ -2029,20 +2006,13 @@ function refreshSummaryTableFromLayers() {
   });
   summaryGroupedRows = groupedRows;
 
-  // Incremental append + draw(false) agar ringan
   summaryTableInstance.clear();
-  const dataToAdd = (document.getElementById('groupToggle')?.checked) ? summaryGroupedRows : summaryFlatRows;
-
-  // Tambah dalam batch besar
-  for (let i = 0; i < dataToAdd.length; i += SUMMARY_APPEND_BATCH) {
-    const batch = dataToAdd.slice(i, i + SUMMARY_APPEND_BATCH);
-    summaryTableInstance.rows.add(batch);
-    summaryTableInstance.draw(false); // tanpa reflow besar, tidak reset pagination
-  }
+  summaryTableInstance.rows.add(isGrouped ? summaryGroupedRows : summaryFlatRows);
+  summaryTableInstance.draw(false);
 }
 
 /* ============================================================
-   Zoom + tooltip + garis koneksi kandidat dari pool & similarity
+   Zoom + koneksi garis kandidat
    ============================================================ */
 function zoomToMatchaproById(id) {
   if (!id) return;
@@ -2139,9 +2109,7 @@ function buildConnectionLinesForId(idsbr) {
    ============================================================ */
 function refreshSummaryFlagsBatch() {
   if (!summaryTableInstance) return;
-  // Perbarui flag tanpa clear besar; ambil baris yang terlihat saja untuk efisiensi
-  const rows = summaryTableInstance.rows({ search: 'applied' }).data().toArray();
-  if (!rows.length) return;
+  const rows = summaryTableInstance.rows().data().toArray();
   const updated = rows.map(r => {
     const flags = [
       ...(poolIndex.byId.get(r.id) || []).map(x => x.flag),
@@ -2151,9 +2119,9 @@ function refreshSummaryFlagsBatch() {
     const hasPoolFlag = flags.length > 0;
     return Object.assign({}, r, { flag: combined, flagOrigin: hasPoolFlag ? 'pool' : r.flagOrigin || 'similarity' });
   });
-  // Replace hanya baris yang terlihat (hindari reflow besar)
-  summaryTableInstance.rows({ search: 'applied' }).remove();
-  summaryTableInstance.rows.add(updated).draw(false);
+  summaryTableInstance.clear();
+  summaryTableInstance.rows.add(updated);
+  summaryTableInstance.draw(false);
 }
 
 function saveSimilarityProgressCSV() {
@@ -2168,6 +2136,7 @@ function saveSimilarityProgressCSV() {
   const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'similarity_checkpoint.csv'; a.click(); URL.revokeObjectURL(a.href);
   showTempToast('Checkpoint similarity disimpan.');
 }
+
 function loadSimilarityProgressCSV(text) {
   const parsed = Papa.parse(text, { header:true, skipEmptyLines:true });
   const out = [];
@@ -2184,273 +2153,180 @@ function loadSimilarityProgressCSV(text) {
 }
 
 /* ============================================================
-   Similarity — Inline Blob Worker dengan batching adaptif
-   - Kirim event progress
-   - Kirim batch kandidat (APPEND_BATCH) agar UI bisa eksekusi hasil sementara
-   - Merge ke similarityArray tanpa duplikasi
+   Similarity — inline blob worker (fixed)
    ============================================================ */
 let similarityRunning = false;
-let similarityWorker = null;
-const APPEND_BATCH = 500; // batch hasil yang dikirim ke UI
-
 function getProcessedIdsFromCheckpoint() {
   const set = new Set();
   similarityArray.forEach(r => { if (r && r.idsbr) set.add(String(r.idsbr)); });
   return set;
 }
 
-function buildSimilarityWorker() {
-  if (similarityWorker) { try { similarityWorker.terminate(); } catch(e){} similarityWorker = null; }
-  const code = `
-    function normalizeBusinessName(raw) {
-      const BUSINESS_FORMS = ${JSON.stringify(BUSINESS_FORMS)};
-      const GENERIC_WORDS = ${JSON.stringify(GENERIC_WORDS)};
-      const EXTRA_STOPWORDS = ${JSON.stringify(EXTRA_STOPWORDS)};
-      const s = String(raw || '').toLowerCase();
-      let t = s.replace(/[^a-z0-9\\s]/g, ' ');
-      t = t.replace(/\\b\\d+\\b/g, ' ');
-      const toks = t.split(/\\s+/).filter(Boolean)
-        .filter(w => BUSINESS_FORMS.indexOf(w) === -1)
-        .filter(w => GENERIC_WORDS.indexOf(w) === -1)
-        .filter(w => EXTRA_STOPWORDS.indexOf(w) === -1);
-      return toks.join(' ').trim();
+function buildSimilarityWorkerCode() {
+  return `
+    var R = 6371000;
+    function toRad(v){ return v*Math.PI/180; }
+    function haversine(lat1,lon1,lat2,lon2){
+      var dLat = toRad(lat2-lat1), dLon = toRad(lon2-lon1);
+      var a = Math.sin(dLat/2)*Math.sin(dLat/2) + Math.cos(toRad(lat1))*Math.cos(toRad(lat2))*Math.sin(dLon/2)*Math.sin(dLon/2);
+      var c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+      return R * c;
     }
-    function tokenSetNormalized(raw) {
-      const t = normalizeBusinessName(raw);
-      return new Set(t.split(/\\s+/).filter(Boolean));
+    function normalizeBusinessName(raw){
+      var s = String(raw||'').toLowerCase();
+      var t = s.replace(/[^a-z0-9\\s]/g,' ').replace(/\\b\\d+\\b/g,' ');
+      var BUSINESS_FORMS = ['pt','cv','ud','firma','kop','koperasi','bumn','bumd','tbk','po','pd','pm','cv.','pt.','ud.'];
+      var GENERIC_WORDS = ['toko','warung','mart','minimarket','supermarket','usaha','kedai','kios','resto','rumah','makan','rm','rm.','cafe','kafe','jual','jual-beli'];
+      var EXTRA_STOPWORDS = ['jaya','abadi','sejahtera','makmur','sukses','indah','mulia','bersama','prima','maju','lestari','sentosa','group','grup','indonesia'];
+      return t.split(/\\s+/).filter(Boolean)
+        .filter(function(w){return BUSINESS_FORMS.indexOf(w)===-1;})
+        .filter(function(w){return GENERIC_WORDS.indexOf(w)===-1;})
+        .filter(function(w){return EXTRA_STOPWORDS.indexOf(w)===-1;})
+        .join(' ').trim();
     }
-    function levenshtein(a, b) {
-      if (!a) a=''; if (!b) b='';
-      const al = a.length, bl = b.length;
-      if (al === 0) return bl;
-      if (bl === 0) return al;
-      const v0 = new Array(bl+1), v1 = new Array(bl+1);
-      for (let j=0;j<=bl;j++) v0[j]=j;
-      for (let i=0;i<al;i++) {
+    function tokenSetNormalized(raw){
+      var t = normalizeBusinessName(raw);
+      var out = new Set();
+      t.split(/\\s+/).filter(Boolean).forEach(function(w){ out.add(w); });
+      return out;
+    }
+    function levenshtein(a,b){
+      a=String(a||''); b=String(b||'');
+      var al=a.length, bl=b.length;
+      if(!al) return bl; if(!bl) return al;
+      var v0=new Array(bl+1), v1=new Array(bl+1);
+      for(var j=0;j<=bl;j++) v0[j]=j;
+      for(var i=0;i<al;i++){
         v1[0]=i+1;
-        for (let j=0;j<bl;j++) {
-          const cost = a[i] === b[j] ? 0 : 1;
-          v1[j+1] = Math.min(v1[j]+1, v0[j+1]+1, v0[j]+cost);
+        for(var j=0;j<bl;j++){
+          var cost = (a[i]===b[j])?0:1;
+          v1[j+1]=Math.min(v1[j]+1, v0[j+1]+1, v0[j]+cost);
         }
-        for (let j=0;j<=bl;j++) v0[j]=v1[j];
+        for(var j2=0;j2<=bl;j2++) v0[j2]=v1[j2];
       }
       return v1[bl];
     }
-    function normalizedLevenshtein(a,b) {
-      const maxl = Math.max((a||'').length, (b||'').length);
-      if (maxl === 0) return 1;
-      const d = levenshtein((a||''),(b||'')); return 1 - (d / maxl);
+    function normalizedLevenshtein(a,b){
+      var maxl=Math.max(String(a||'').length,String(b||'').length); if(!maxl) return 1;
+      return 1 - (levenshtein(a,b)/maxl);
     }
-    function jaccard(a,b) {
-      const sa = tokenSetNormalized(a), sb = tokenSetNormalized(b);
-      let inter = 0;
-      sa.forEach(x => { if (sb.has(x)) inter++; });
-      const uni = new Set([...sa, ...sb]).size;
-      if (uni === 0) return 0;
-      return inter/uni;
+    function jaccard(a,b){
+      var sa=tokenSetNormalized(a), sb=tokenSetNormalized(b), inter=0;
+      sa.forEach(function(x){ if(sb.has(x)) inter++; });
+      var uni=new Set([].concat(Array.from(sa), Array.from(sb))).size;
+      return uni? (inter/uni) : 0;
     }
-    function haversine(lat1,lon1,lat2,lon2) {
-      const R = 6371000;
-      const toRad = v => v*Math.PI/180;
-      const dLat = toRad(lat2-lat1), dLon = toRad(lon2-lon1);
-      const a = Math.sin(dLat/2)*Math.sin(dLat/2) + Math.cos(toRad(lat1))*Math.cos(toRad(lat2))*Math.sin(dLon/2)*Math.sin(dLon/2);
-      const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
-      return R * c;
+    function gridCellFor(lon,lat,cellDeg){
+      var gx=Math.floor(lon/cellDeg), gy=Math.floor(lat/cellDeg);
+      return gx+':'+gy;
     }
-    function computeScore(nameA, nameB) {
-      const na = normalizeBusinessName(nameA);
-      const nb = normalizeBusinessName(nameB);
-      const lev = normalizedLevenshtein(na, nb);
-      const jac = jaccard(na, nb);
-      return Math.round((lev*0.6 + jac*0.4) * 100);
-    }
-    function gridCellFor(lon, lat, cellDeg) {
-      const gx = Math.floor(lon / cellDeg);
-      const gy = Math.floor(lat / cellDeg);
-      return gx + ':' + gy;
-    }
-    function buildGridIndex(features, cellDeg) {
-      const idx = new Map();
-      for (let i=0;i<features.length;i++) {
-        const f = features[i];
-        const lon = f.geometry?.coordinates?.[0];
-        const lat = f.geometry?.coordinates?.[1];
-        if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
-        const key = gridCellFor(lon, lat, cellDeg);
-        const arr = idx.get(key) || [];
-        arr.push(f);
-        idx.set(key, arr);
+    function buildGridIndex(features, cellDeg){
+      var idx=new Map();
+      for(var i=0;i<features.length;i++){
+        var f=features[i];
+        var geom=f && f.geometry, coords=geom && geom.coordinates;
+        var lon = coords ? coords[0] : null, lat = coords ? coords[1] : null;
+        if(!isFinite(lat)||!isFinite(lon)) continue;
+        var key=gridCellFor(lon,lat,cellDeg);
+        var arr=idx.get(key)||[]; arr.push(f); idx.set(key,arr);
       }
       return idx;
     }
-    function neighborKeysFor(lon, lat, cellDeg) {
-      const gx = Math.floor(lon / cellDeg);
-      const gy = Math.floor(lat / cellDeg);
-      const keys = [];
-      for (let dx=-1; dx<=1; dx++) for (let dy=-1; dy<=1; dy++) keys.push((gx+dx)+':' + (gy+dy));
+    function neighborKeysFor(lon,lat,cellDeg){
+      var gx=Math.floor(lon/cellDeg), gy=Math.floor(lat/cellDeg), keys=[];
+      for(var dx=-1;dx<=1;dx++){ for(var dy=-1;dy<=1;dy++){ keys.push((gx+dx)+':' + (gy+dy)); } }
       return keys;
     }
 
-    self.onmessage = function(e) {
-      const { matchFeatures, kdmFeatures, swFeatures, radiusM, thresholdPct, cellDeg, processedSet, appendBatch } = e.data;
-      const gridKDM = buildGridIndex(kdmFeatures, cellDeg);
-      const gridSW = buildGridIndex(swFeatures, cellDeg);
-      const gridMA = buildGridIndex(matchFeatures, cellDeg);
+    self.onmessage=function(e){
+      var match = (e.data.match||[]).slice();
+      var kdm = (e.data.kdm||[]).slice();
+      var swmaps = (e.data.swmaps||[]).slice();
+      var radius = e.data.radius||1000;
+      var threshold = e.data.threshold||60;
+      var cellDeg = e.data.cellDeg||0.01;
+      var processedSet = new Set(e.data.processedIds||[]);
 
-      const outCandidatesMap = new Map(); // idsbr -> array candidates
-      const batchRows = [];
-      let emitted = 0;
+      var gridMA = buildGridIndex(match, cellDeg);
+      var gridKDM = buildGridIndex(kdm, cellDeg);
+      var gridSW = buildGridIndex(swmaps, cellDeg);
 
-      for (let i=0;i<matchFeatures.length;i++) {
-        const mf = matchFeatures[i];
-        const mid = (mf.properties && (mf.properties.idsbr || mf.properties.IDSBR || mf.properties.id_sbr || mf.properties.id)) || '';
-        const lon = mf.geometry?.coordinates?.[0], lat = mf.geometry?.coordinates?.[1];
-        const name = (mf.properties && (mf.properties.nama_usaha || mf.properties.Nama_Usaha || mf.properties.nama)) || '';
+      var similarities = []; // { idsbr, sumber, id, percent, distance }
+      var candidatesMapRaw = {}; // idsbr -> array { sumber,id,percent,distance,name:'' }
 
-        if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
+      var total = match.length;
+      var doneCounter = processedSet.size;
 
-        if (i % 200 === 0) {
-          self.postMessage({ type:'progress', done: i, total: matchFeatures.length });
+      for(var i=0;i<match.length;i++){
+        var mf = match[i];
+        var props = mf && mf.properties || {};
+        var geom = mf && mf.geometry || {};
+        var coords = geom && geom.coordinates || [];
+        var mid = props.idsbr || props.IDSBR || props.id_sbr || props.id || '';
+        var mlon = coords[0], mlat = coords[1];
+        var mnameRaw = props.nama_usaha || props.Nama_Usaha || props.nama || '';
+        var mnameNorm = normalizeBusinessName(mnameRaw);
+
+        if(processedSet.has(String(mid))){
+          doneCounter++;
+          if(doneCounter%50===0){ self.postMessage({type:'progress',done:doneCounter,total:total}); }
+          continue;
         }
 
-        if (processedSet && processedSet.has(String(mid))) continue;
+        var neigh = neighborKeysFor(mlon, mlat, cellDeg);
+        var candidatesForThis = [];
 
-        const neigh = neighborKeysFor(lon, lat, cellDeg);
-        const batch = [];
+        function evalCandidate(sumber, other){
+          var op = other && other.properties || {};
+          var og = other && other.geometry || {};
+          var oc = og && og.coordinates || [];
+          var oid = op.idsbr || op.IDSBR || op.id_sbr || op.id || op.ID || op.IDS || '';
+          if(!oid) return;
+          if(String(oid)===String(mid) && sumber==='Matchapro') return;
+          var olon=oc[0], olat=oc[1];
+          var onameRaw = op.nama_usaha || op.Nama_Usaha || op.nama || '';
+          if(!isFinite(olat)||!isFinite(olon)) return;
+          var d = haversine(mlat, mlon, olat, olon);
+          if(d>radius) return;
+          var onorm = normalizeBusinessName(onameRaw);
+          var lev = normalizedLevenshtein(mnameNorm, onorm);
+          var jac = jaccard(mnameNorm, onorm);
+          var scorePct = Math.round((lev*0.6 + jac*0.4)*100);
+          candidatesForThis.push({ sumber: sumber, id: String(oid), percent: scorePct, distance: d, name: '' });
+        }
 
-        // Duplikat Matchapro
-        for (const key of neigh) {
-          const listMA = gridMA.get(key) || [];
-          for (let j=0;j<listMA.length;j++) {
-            const other = listMA[j];
-            if (other === mf) continue;
-            const oid = (other.properties && (other.properties.idsbr || other.properties.IDSBR || other.properties.id_sbr || other.properties.id)) || '';
-            if (String(oid) === String(mid)) continue;
-            const oname = (other.properties && (other.properties.nama_usaha || other.properties.Nama_Usaha || other.properties.nama)) || '';
-            const olon = other.geometry?.coordinates?.[0], olat = other.geometry?.coordinates?.[1];
-            if (!Number.isFinite(olat) || !Number.isFinite(olon)) continue;
-            const d = haversine(lat,lon,olat,olon);
-            if (d > radiusM) continue;
-            const score = computeScore(name, oname);
-            batch.push({ sumber:'Matchapro', id: oid, percent: score, distance: d, name: oname });
+        for(var ni=0; ni<neigh.length; ni++){
+          var key = neigh[ni];
+          var listMA = gridMA.get(key) || [];
+          for(var j=0;j<listMA.length;j++){
+            var otherMA = listMA[j];
+            if(otherMA===mf) continue;
+            evalCandidate('Matchapro', otherMA);
           }
+          var listK = gridKDM.get(key) || [];
+          for(var k=0;k<listK.length;k++){ evalCandidate('KDM', listK[k]); }
+          var listS = gridSW.get(key) || [];
+          for(var s=0;s<listS.length;s++){ evalCandidate('SWMAPS', listS[s]); }
         }
 
-        // KDM
-        for (const key of neigh) {
-          const listK = gridKDM.get(key) || [];
-          for (let k=0;k<listK.length;k++) {
-            const other = listK[k];
-            const oid = (other.properties && (other.properties.id || other.properties.ID || other.properties.IDS)) || '';
-            const oname = (other.properties && (other.properties.Nama_Usaha || other.properties.nama_usaha || other.properties.nama)) || '';
-            const olon = other.geometry?.coordinates?.[0], olat = other.geometry?.coordinates?.[1];
-            if (!Number.isFinite(olat) || !Number.isFinite(olon)) continue;
-            const d = haversine(lat,lon,olat,olon);
-            if (d > radiusM) continue;
-            const score = computeScore(name, oname);
-            batch.push({ sumber:'KDM', id: oid, percent: score, distance: d, name: oname });
-          }
-        }
+        candidatesMapRaw[String(mid)] = candidatesForThis.slice();
 
-        // SWMAPS
-        for (const key of neigh) {
-          const listS = gridSW.get(key) || [];
-          for (let k=0;k<listS.length;k++) {
-            const other = listS[k];
-            const oid = (other.properties && (other.properties.id || other.properties.ID || other.properties.IDS)) || '';
-            const oname = (other.properties && (other.properties.Nama_Usaha || other.properties.nama_usaha || other.properties.nama)) || '';
-            const olon = other.geometry?.coordinates?.[0], olat = other.geometry?.coordinates?.[1];
-            if (!Number.isFinite(olat) || !Number.isFinite(olon)) continue;
-            const d = haversine(lat,lon,olat,olon);
-            if (d > radiusM) continue;
-            const score = computeScore(name, oname);
-            batch.push({ sumber:'SWMAPS', id: oid, percent: score, distance: d, name: oname });
-          }
-        }
+        var uniq = new Set();
+        candidatesForThis.filter(function(x){return x.percent>=threshold;}).forEach(function(x){
+          var k = String(mid)+'|'+x.sumber+'|'+String(x.id);
+          if(uniq.has(k)) return; uniq.add(k);
+          similarities.push({ idsbr: String(mid), sumber: x.sumber, id: String(x.id), percent: x.percent, distance: Math.round(x.distance) });
+        });
 
-        outCandidatesMap.set(mid, batch);
-
-        // Tambah ke rows batch (≥ threshold)
-        for (const x of batch) {
-          if (x.percent >= thresholdPct) {
-            batchRows.push({
-              idsbr: mid, sumber: x.sumber, id: x.id,
-              percent: x.percent, distance: Math.round(x.distance), name: x.name
-            });
-          }
-        }
-
-        // Emit batch incremental agar UI bisa eksekusi hasil sementara
-        if (batchRows.length >= appendBatch) {
-          self.postMessage({ type:'batch', candidates: Array.from(outCandidatesMap.entries()), rows: batchRows.slice() });
-          batchRows.length = 0; // reset
-          outCandidatesMap.clear();
-          emitted++;
+        doneCounter++;
+        if(doneCounter%50===0 || doneCounter===total){
+          self.postMessage({type:'progress',done:doneCounter,total:total});
         }
       }
 
-      // Emit sisa batch + sinyal selesai
-      if (batchRows.length > 0 || outCandidatesMap.size > 0) {
-        self.postMessage({ type:'batch', candidates: Array.from(outCandidatesMap.entries()), rows: batchRows.slice() });
-      }
-      self.postMessage({ type:'done' });
+      self.postMessage({ type:'final', similarities: similarities, candidatesMapRaw: candidatesMapRaw });
     };
   `;
-  const blob = new Blob([code], { type:'application/javascript' });
-  const url = URL.createObjectURL(blob);
-  similarityWorker = new Worker(url);
-  similarityWorker.__url = url;
-
-  similarityWorker.onmessage = (ev) => {
-    if (!ev.data) return;
-    if (ev.data.type === 'progress') {
-      const { done, total } = ev.data;
-      const baseDone = getProcessedIdsFromCheckpoint().size;
-      const shown = Math.min(total, baseDone + done);
-      document.getElementById('simStatusText').textContent = `${shown} / ${total}`;
-      document.getElementById('simProgress').style.width = total ? `${Math.round((shown/total)*100)}%` : '0%';
-    } else if (ev.data.type === 'batch') {
-      // Merge kandidat map ke similarityCandidatesMap (incremental)
-      for (const [idsbr, arr] of ev.data.candidates) {
-        const prev = similarityCandidatesMap.get(idsbr) || [];
-        similarityCandidatesMap.set(idsbr, prev.concat(arr));
-      }
-      // Merge rows (dedupe)
-      const merged = new Map();
-      similarityArray.forEach(r => merged.set(`${r.idsbr}|${r.sumber}|${r.id}`, r));
-      ev.data.rows.forEach(r => {
-        const key = `${r.idsbr}|${r.sumber}|${r.id}`;
-        if (!merged.has(key)) merged.set(key, r);
-      });
-      similarityArray = Array.from(merged.values());
-
-      // Incremental update tabel: tambah batch dan draw(false) agar responsif
-      refreshSummaryTableFromLayers();
-    } else if (ev.data.type === 'done') {
-      similarityRunning = false;
-      document.getElementById('simStatusText').textContent = 'Selesai';
-      document.getElementById('simProgress').style.width = '100%';
-      showTempToast('Similarity selesai: ' + similarityArray.length + ' entri.');
-
-      try {
-        URL.revokeObjectURL(similarityWorker.__url);
-        similarityWorker.terminate();
-        similarityWorker = null;
-      } catch(e){}
-    }
-  };
-
-  similarityWorker.onerror = (err) => {
-    similarityRunning = false;
-    showTempToast('Terjadi error di similarity worker.');
-    try {
-      URL.revokeObjectURL(similarityWorker.__url);
-      similarityWorker.terminate();
-      similarityWorker = null;
-    } catch(e){}
-  };
-
-  return similarityWorker;
 }
 
 function runSimilarityWorker() {
@@ -2459,46 +2335,87 @@ function runSimilarityWorker() {
   const matchFeatures = (matchaproLayer.toGeoJSON().features || []).slice();
   const kdmFeatures = (kdmLayer.toGeoJSON().features || []).slice();
   const swmapsFeatures = (swmapsLayer.toGeoJSON().features || []).slice();
-
   if (matchFeatures.length === 0) return showTempToast('Layer Matchapro kosong.', 1800);
 
-  const processedSet = getProcessedIdsFromCheckpoint();
+  const radius = RADIUS_DEFAULT_M;
+  const threshold = currentThresholdPct;
+
+  const processedSet = Array.from(getProcessedIdsFromCheckpoint().values());
+  const total = matchFeatures.length;
+  const initialDone = processedSet.length;
 
   similarityRunning = true;
-  const total = matchFeatures.length;
-  const initialDone = processedSet.size;
   document.getElementById('simStatusText').textContent = `${initialDone} / ${total}`;
   document.getElementById('simProgress').style.width = total ? `${Math.round((initialDone/total)*100)}%` : '0%';
 
-  const worker = buildSimilarityWorker();
-  worker.postMessage({
-    matchFeatures,
-    kdmFeatures,
-    swFeatures: swmapsFeatures,
-    radiusM: RADIUS_DEFAULT_M,
-    thresholdPct: currentThresholdPct,
+  const workerCode = buildSimilarityWorkerCode();
+  const blob = new Blob([workerCode], { type: 'application/javascript' });
+  const url = URL.createObjectURL(blob);
+  const simWorker = new Worker(url);
+
+  simWorker.onmessage = (ev) => {
+    const data = ev.data || {};
+    if (data.type === 'progress') {
+      const doneDisplay = Math.min(total, data.done);
+      document.getElementById('simStatusText').textContent = `${doneDisplay} / ${total}`;
+      document.getElementById('simProgress').style.width = total ? `${Math.round((doneDisplay/total)*100)}%` : '0%';
+      if (doneDisplay > 0 && doneDisplay % 100 === 0) {
+        rebuildCandidatesFromCheckpoint();
+        refreshSummaryTableFromLayers();
+      }
+    } else if (data.type === 'final') {
+      const merged = new Map();
+      similarityArray.forEach(r => merged.set(`${r.idsbr}|${r.sumber}|${r.id}`, r));
+      (data.similarities || []).forEach(g => {
+        const key = `${g.idsbr}|${g.sumber}|${g.id}`;
+        if (!merged.has(key)) merged.set(key, g);
+      });
+      similarityArray = Array.from(merged.values());
+
+      similarityCandidatesMap.clear();
+      const raw = data.candidatesMapRaw || {};
+      for (const idsbr in raw) {
+        const arr = raw[idsbr] || [];
+        const enriched = arr.map(c => {
+          let name = '';
+          const sumberLower = String(c.sumber || '').toLowerCase();
+          if (sumberLower === 'matchapro') {
+            name = (matchaproIdx.get(c.id) || {}).name || '';
+          } else if (sumberLower === 'kdm') {
+            name = (kdmIdx.get(c.id) || {}).name || '';
+          } else if (sumberLower === 'swmaps') {
+            name = (swmapsIdx.get(c.id) || {}).name || '';
+          }
+          return { sumber: c.sumber, id: c.id, percent: c.percent, distance: c.distance, name };
+        });
+        similarityCandidatesMap.set(String(idsbr), enriched);
+      }
+
+      similarityRunning = false;
+      document.getElementById('simStatusText').textContent = 'Selesai';
+      document.getElementById('simProgress').style.width = '100%';
+
+      showTempToast('Similarity selesai: ' + similarityArray.length + ' entri.');
+      rebuildCandidatesFromCheckpoint();
+      refreshSummaryTableFromLayers();
+
+      try {
+        URL.revokeObjectURL(url);
+        simWorker.terminate();
+      } catch(e){}
+    }
+  };
+
+  simWorker.postMessage({
+    match: matchFeatures,
+    kdm: kdmFeatures,
+    swmaps: swmapsFeatures,
+    radius,
+    threshold,
     cellDeg: GRID_CELL_DEG,
-    processedSet,
-    appendBatch: APPEND_BATCH
+    processedIds: processedSet
   });
 }
-
-/* ============================================================
-   Summary panel toggle placement (tetap)
-   ============================================================ */
-document.addEventListener('DOMContentLoaded', () => {
-  const summaryPanel = document.getElementById('summaryPanel');
-  const toggleBtn = document.getElementById('toggleSidebar');
-  toggleBtn.onclick = () => {
-    const isOpen = summaryPanel.classList.toggle('open');
-    summaryPanel.setAttribute('aria-hidden', isOpen ? 'false' : 'true');
-    const tb = document.getElementById('toolbar').getBoundingClientRect();
-    const mapRect = document.getElementById('map').getBoundingClientRect();
-    const topOffset = (tb.bottom - mapRect.top) + 8;
-    summaryPanel.style.top = `${topOffset}px`;
-    if (isOpen && !summaryTableInstance) initSummaryDataTable();
-  };
-});
 </script>
 </body>
 </html>
