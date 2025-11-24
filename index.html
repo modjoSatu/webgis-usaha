@@ -2,7 +2,7 @@
 <html lang="id">
 <head>
   <meta charset="utf-8" />
-  <title>WebGIS - Direktori Usaha v8 (fixed)</title>
+  <title>WebGIS - Direktori Usaha v8 (refactor)</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <!-- Leaflet -->
@@ -16,10 +16,13 @@
   <script src="https://cdn.datatables.net/1.13.6/js/jquery.dataTables.min.js"></script>
 
   <style>
+    /* ============================================================
+       BLOK: STYLE UMUM (layout, toolbar, legend, summary panel, modal)
+       ============================================================ */
     html, body { height:100%; margin:0; }
     #map { width:100%; height:100%; }
 
-    /* Toolbar utama (tetap konsisten) */
+    /* Toolbar utama */
     #toolbar {
       position: absolute;
       top: 10px;
@@ -273,7 +276,7 @@
 
 <script>
 /* ============================================================
-   Toast sederhana (notifikasi seragam)
+   BLOK: UTILS (helper umum, normalisasi, jarak, nama properti)
    ============================================================ */
 function showTempToast(msg, duration = 1400) {
   const prev = document.getElementById('__copy_toast'); if (prev) prev.remove();
@@ -294,8 +297,123 @@ async function copyToClipboard(text) {
   } catch (e) { console.warn('copy failed', e); showTempToast('Gagal menyalin: ' + text, 1800); }
 }
 
+function normalizeNumber(x) {
+  if (x == null) return NaN;
+  const s = String(x).trim().replace(',', '.');
+  const v = parseFloat(s);
+  return Number.isFinite(v) ? v : NaN;
+}
+function getPropIgnoreCase(obj, candidates) {
+  if (!obj) return null;
+  const arr = Array.isArray(candidates) ? candidates : [candidates];
+  for (const cand of arr) {
+    const t = String(cand).toLowerCase();
+    for (const k in obj) {
+      if (!Object.hasOwn(obj, k)) continue;
+      if (k.toLowerCase() === t) return obj[k];
+    }
+  }
+  return null;
+}
+function escapeId(s) { return String(s).replace(/[^a-z0-9_\-]/gi, '_') || 'noid'; }
+
+/* Normalisasi nama usaha + similarity */
+const BUSINESS_FORMS = ['pt','cv','ud','firma','kop','koperasi','bumn','bumd','tbk','po','pd','pm','cv.','pt.','ud.'];
+const GENERIC_WORDS = ['toko','warung','mart','minimarket','supermarket','usaha','kedai','kios','resto','rumah','makan','rm','rm.','cafe','kafe','jual','jual-beli'];
+const EXTRA_STOPWORDS = ['jaya','abadi','sejahtera','makmur','sukses','indah','mulia','bersama','prima','maju','lestari','sentosa','group','grup','indonesia'];
+
+function normalizeBusinessName(raw) {
+  const s = String(raw || '').toLowerCase();
+  let t = s.replace(/[^a-z0-9\s]/g, ' ');
+  t = t.replace(/\b\d+\b/g, ' ');
+  const toks = t.split(/\s+/).filter(Boolean)
+    .filter(w => !BUSINESS_FORMS.includes(w))
+    .filter(w => !GENERIC_WORDS.includes(w))
+    .filter(w => !EXTRA_STOPWORDS.includes(w));
+  return toks.join(' ').trim();
+}
+function tokenSetNormalized(raw) {
+  const t = normalizeBusinessName(raw);
+  return new Set(t.split(/\s+/).filter(Boolean));
+}
+function levenshtein(a, b) {
+  if (!a) a=''; if (!b) b='';
+  const al = a.length, bl = b.length;
+  if (al === 0) return bl;
+  if (bl === 0) return al;
+  const v0 = new Array(bl+1), v1 = new Array(bl+1);
+  for (let j=0;j<=bl;j++) v0[j]=j;
+  for (let i=0;i<al;i++) {
+    v1[0]=i+1;
+    for (let j=0;j<bl;j++) {
+      const cost = a[i] === b[j] ? 0 : 1;
+      v1[j+1] = Math.min(v1[j]+1, v0[j+1]+1, v0[j]+cost);
+    }
+    for (let j2=0;j2<=bl;j2++) v0[j2]=v1[j2];
+  }
+  return v1[bl];
+}
+function normalizedLevenshtein(a,b) {
+  const maxl = Math.max((a||'').length, (b||'').length);
+  if (maxl === 0) return 1;
+  const d = levenshtein((a||''),(b||'')); return 1 - (d / maxl);
+}
+function jaccard(a,b) {
+  const sa = tokenSetNormalized(a), sb = tokenSetNormalized(b);
+  let inter = 0;
+  sa.forEach(x => { if (sb.has(x)) inter++; });
+  const uni = new Set([...sa, ...sb]).size;
+  if (uni === 0) return 0;
+  return inter/uni;
+}
+function haversine(lat1,lon1,lat2,lon2) {
+  const R = 6371000;
+  const toRad = v => v*Math.PI/180;
+  const dLat = toRad(lat2-lat1), dLon = toRad(lon2-lon1);
+  const a = Math.sin(dLat/2)*Math.sin(dLat/2) + Math.cos(toRad(lat1))*Math.cos(toRad(lat2))*Math.sin(dLon/2)*Math.sin(dLon/2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+  return R * c;
+}
+function computePercentByNames(nameA, nameB) {
+  if (!nameA || !nameB) return '';
+  const na = normalizeBusinessName(nameA);
+  const nb = normalizeBusinessName(nameB);
+  const lev = normalizedLevenshtein(na, nb);
+  const jac = jaccard(na, nb);
+  return Math.round((lev*0.6 + jac*0.4) * 100);
+}
+function computeDistanceMeters(lat1, lon1, lat2, lon2) {
+  if (![lat1,lon1,lat2,lon2].every(Number.isFinite)) return '';
+  return Math.round(haversine(lat1,lon1,lat2,lon2));
+}
+
+/* Inject utils ke Worker dari satu sumber */
+function similarityUtilsSource() {
+  return `
+${normalizeBusinessName.toString()}
+${tokenSetNormalized.toString()}
+${levenshtein.toString()}
+${normalizedLevenshtein.toString()}
+${jaccard.toString()}
+${haversine.toString()}
+`;
+}
+function updateSimProgress(done, total) {
+  const st = document.getElementById('simStatusText');
+  const pb = document.getElementById('simProgress');
+  if (st) st.textContent = `${done} / ${total}`;
+  if (pb) pb.style.width = total ? `${Math.round((done/total)*100)}%` : '0%';
+}
+function buildRowActionsHTML(id) {
+  return `
+    <span class="action-icon save-icon" title="Simpan similarity" data-id="${id}"></span>
+    <span class="action-icon del-icon" title="Hapus similarity" data-id="${id}"></span>
+    <span class="action-icon view-icon" title="Lihat kandidat" data-id="${id}"></span>
+  `;
+}
+
 /* ============================================================
-   State, indexing & utilities
+   BLOK: STATE & INDEXING (pool, indeks layer, summary arrays)
    ============================================================ */
 let pool = []; // array of { id, id_sumber, flag }
 const poolIndex = { byId:new Map(), bySource:new Map(), keyed:new Set() };
@@ -319,135 +437,19 @@ let summaryTableInstance = null;
 let summaryFlatRows = [];
 let summaryGroupedRows = [];
 
-/* Warna proyek */
+/* Warna & konstanta proyek */
 const POOL_BORDER = '#0066ff';
 const POOL_FILL = '#66b3ff';
 const RADIUS_DEFAULT_M = 1000;
-
-/* Threshold similarity (ubah dari UI) */
 let currentThresholdPct = 60;
-
-/* Grid spasial (~1.1km di ekuator) */
 const GRID_CELL_DEG = 0.01;
 
-/* Warna garis koneksi kandidat */
 const LINK_COLOR_MATCHAPRO = '#e68a00';
 const LINK_COLOR_KDM = '#7a1e1e';
 const LINK_COLOR_SWMAPS = '#3b4992';
 
-/* Overlay garis koneksi similarity */
-const similarityLinksGroup = L.layerGroup();
-
-function normalizeNumber(x) {
-  if (x == null) return NaN;
-  const s = String(x).trim().replace(',', '.');
-  const v = parseFloat(s);
-  return Number.isFinite(v) ? v : NaN;
-}
-function getPropIgnoreCase(obj, candidates) {
-  if (!obj) return null;
-  const arr = Array.isArray(candidates) ? candidates : [candidates];
-  for (const cand of arr) {
-    const t = String(cand).toLowerCase();
-    for (const k in obj) {
-      if (!Object.hasOwn(obj, k)) continue;
-      if (k.toLowerCase() === t) return obj[k];
-    }
-  }
-  return null;
-}
-function escapeId(s) { return String(s).replace(/[^a-z0-9_\-]/gi, '_') || 'noid'; }
-
 /* ============================================================
-   Normalisasi nama usaha — DRY & KISS (diperkuat)
-   ============================================================ */
-const BUSINESS_FORMS = ['pt','cv','ud','firma','kop','koperasi','bumn','bumd','tbk','po','pd','pm','cv.','pt.','ud.'];
-const GENERIC_WORDS = ['toko','warung','mart','minimarket','supermarket','usaha','kedai','kios','resto','rumah','makan','rm','rm.','cafe','kafe','jual','jual-beli'];
-const EXTRA_STOPWORDS = ['jaya','abadi','sejahtera','makmur','sukses','indah','mulia','bersama','prima','maju','lestari','sentosa','group','grup','indonesia'];
-
-function normalizeBusinessName(raw) {
-  const s = String(raw || '').toLowerCase();
-  let t = s.replace(/[^a-z0-9\s]/g, ' ');
-  t = t.replace(/\b\d+\b/g, ' ');
-  const toks = t.split(/\s+/).filter(Boolean)
-    .filter(w => !BUSINESS_FORMS.includes(w))
-    .filter(w => !GENERIC_WORDS.includes(w))
-    .filter(w => !EXTRA_STOPWORDS.includes(w));
-  return toks.join(' ').trim();
-}
-function tokenSetNormalized(raw) {
-  const t = normalizeBusinessName(raw);
-  return new Set(t.split(/\s+/).filter(Boolean));
-}
-
-/* ============================================================
-   Pool CSV & indexing
-   ============================================================ */
-function csvToPool(text) {
-  const parsed = Papa.parse(text, { header: true, skipEmptyLines: true });
-  const out = [];
-  parsed.data.forEach(row => {
-    if (!row) return;
-    const idVal = (row.id || row.ID || row.idsbr || row.IDSBR || row.IdSbr || row.id_sbr || '').toString().trim();
-    const id_sumber = (row.id_sumber || row['id_sumber'] || row.ID_Sumber || '').toString().trim();
-    const flag = (row.flag || row.FLAG || row.sumber || '').toString().trim() || '-';
-    out.push({ id: idVal || '-', id_sumber: id_sumber || '-', flag: flag || '-' });
-  });
-  return out;
-}
-function poolToCSV(arr) {
-  const header = 'id,id_sumber,flag\n';
-  const rows = arr.map(r => `${r.id},${r.id_sumber},${r.flag}`);
-  return header + rows.join('\n');
-}
-function rebuildPoolIndex() {
-  poolIndex.byId.clear(); poolIndex.bySource.clear(); poolIndex.keyed.clear();
-  for (const r of pool) {
-    const idStr = String(r.id || '').trim();
-    const srcStr = String(r.id_sumber || '').trim();
-    if (idStr) {
-      poolIndex.keyed.add(idStr);
-      const arr = poolIndex.byId.get(idStr) || [];
-      arr.push(r); poolIndex.byId.set(idStr, arr);
-    }
-    if (srcStr) {
-      poolIndex.keyed.add(srcStr);
-      const arr2 = poolIndex.bySource.get(srcStr) || [];
-      arr2.push(r); poolIndex.bySource.set(srcStr, arr2);
-    }
-  }
-}
-function pushPool(entry) {
-  const id = (entry.id || '-').toString();
-  const id_sumber = (entry.id_sumber || '-').toString();
-  const flag = (entry.flag || '-').toString();
-
-  if (flag.toLowerCase().includes('duplikat') && id !== '-' && id_sumber !== '-' && id === id_sumber) {
-    showTempToast('ID tidak boleh sama dengan ID sumber untuk status Duplikat!', 2000);
-    return false;
-  }
-  const existingById = poolIndex.byId.get(id) || [];
-  const exists = existingById.some(p => String(p.id_sumber)===id_sumber && String(p.flag)===flag);
-  if (exists) { showTempToast('Relasi sudah ada di pool'); return false; }
-
-  const newEntry = { id, id_sumber, flag };
-  pool.push(newEntry);
-
-  if (id) {
-    poolIndex.keyed.add(id);
-    const arr = poolIndex.byId.get(id) || [];
-    arr.push(newEntry); poolIndex.byId.set(id, arr);
-  }
-  if (id_sumber) {
-    poolIndex.keyed.add(id_sumber);
-    const arr2 = poolIndex.bySource.get(id_sumber) || [];
-    arr2.push(newEntry); poolIndex.bySource.set(id_sumber, arr2);
-  }
-  return true;
-}
-
-/* ============================================================
-   Map & base layers (tetap)
+   BLOK: MAP & LAYERS (Leaflet init, base layers, overlays, legend)
    ============================================================ */
 const map = L.map('map').setView([-7.82,112.02], 12);
 const osm = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(map);
@@ -515,8 +517,9 @@ const matchaproLayer = L.geoJSON(null, {
   }
 }).addTo(map);
 
-/* Layer control & legend (tetap) */
 const poolOverlayGroup = L.layerGroup();
+const similarityLinksGroup = L.layerGroup();
+
 const overlays = {
   'SLS (Polygon)': slsLayer,
   'PLKUMKM (Titik)': plkLayer,
@@ -547,7 +550,7 @@ legend.onAdd = function () {
 legend.addTo(map);
 
 /* ============================================================
-   Popup builders
+   BLOK: POPUP BUILDERS (SWMAPS / KDM / Matchapro)
    ============================================================ */
 function buildSWMAPSPopup(layer, feature) {
   const p = feature.properties || {};
@@ -875,7 +878,7 @@ function buildMatchaproPopup(layer, feature) {
 }
 
 /* ============================================================
-   Pool visual & refresh logic
+   BLOK: POOL VISUAL & REFRESH (style overlay, selective refresh)
    ============================================================ */
 function getFeatureIdByLayerType(feature, layerType) {
   const p = feature?.properties || {};
@@ -941,317 +944,10 @@ const scheduleRefresh = (() => {
 })();
 
 /* ============================================================
-   Popup global bindings (copy & undo)
-   ============================================================ */
-map.on('popupopen', (e) => {
-  setTimeout(() => {
-    const popupEl = e.popup.getElement(); if (!popupEl) return;
-
-    popupEl.querySelectorAll('[data-copy-id], .copy-icon').forEach(el => {
-      el.onclick = null;
-      try { el.removeEventListener('click', el._copyHandler); } catch(err){}
-      const handler = () => {
-        const attr = el.getAttribute('data-copy-id') || el.dataset.copyId;
-        if (attr) copyToClipboard(attr);
-        else {
-          const txt = el.previousElementSibling ? el.previousElementSibling.textContent : (el.innerText || el.textContent || '');
-          if (txt) copyToClipboard(txt.trim());
-        }
-      };
-      el._copyHandler = handler; el.addEventListener('click', handler);
-    });
-
-    popupEl.querySelectorAll('.undo-icon').forEach(el => {
-      el.onclick = null;
-      try { el.removeEventListener('click', el._undoHandler); } catch(err){}
-      const handler = () => {
-        const id = el.getAttribute('data-id') || el.dataset.id || '';
-        const id_sumber = el.getAttribute('data-id_sumber') || el.dataset.idSumber || '';
-        const flag = el.getAttribute('data-flag') || el.dataset.flag || '';
-        let before = pool.length;
-        if (id && id_sumber && flag) {
-          pool = pool.filter(p => !(String(p.id)===String(id) && String(p.id_sumber)===String(id_sumber) && String(p.flag)===String(flag)));
-        } else if (id) {
-          pool = pool.filter(p => !(String(p.id)===String(id) || String(p.id_sumber)===String(id)));
-        }
-        rebuildPoolIndex();
-        const after = pool.length;
-        showTempToast(after < before ? 'Data pool system berhasil dihapus' : 'Tidak ditemukan data pool terkait');
-        scheduleRefresh();
-        try { e.popup._source.closePopup(); } catch(err){}
-        refreshSummaryFlagsBatch();
-        refreshSummaryTableFromLayers();
-      };
-      el._undoHandler = handler; el.addEventListener('click', handler);
-    });
-  }, 20);
-});
-
-/* ============================================================
-   Loading overlay & file handlers
+   BLOK: FILE HANDLERS (loading CSV/GeoJSON, pool save/load)
    ============================================================ */
 function showLoadingOverlay(show=true) { document.getElementById('loadingOverlay').style.display = show ? 'flex' : 'none'; }
 
-/* Rebuild index nama & koordinat per layer sumber */
-function rebuildLayerIndexes() {
-  matchaproIdx.clear(); kdmIdx.clear(); swmapsIdx.clear();
-  matchaproLayer.eachLayer(l => {
-    const p = l.feature?.properties || {};
-    const id = (p.idsbr || p.IDSBR || p.IdSbr || p.id_sbr || p.id || '').toString();
-    const name = getPropIgnoreCase(p, ['nama_usaha','Nama_Usaha','nama','nama_komersial_usaha']) || '';
-    const lat = l.feature?.geometry?.coordinates?.[1];
-    const lon = l.feature?.geometry?.coordinates?.[0];
-    if (id) matchaproIdx.set(id, { name, lat, lon });
-  });
-  kdmLayer.eachLayer(l => {
-    const p = l.feature?.properties || {};
-    const id = (getPropIgnoreCase(p, ['id','ID','IDS','Id']) || '').toString();
-    const name = getPropIgnoreCase(p, ['Nama_Usaha','nama_usaha','nama']) || '';
-    const lat = l.feature?.geometry?.coordinates?.[1];
-    const lon = l.feature?.geometry?.coordinates?.[0];
-    if (id) kdmIdx.set(id, { name, lat, lon });
-  });
-  swmapsLayer.eachLayer(l => {
-    const p = l.feature?.properties || {};
-    const id = (getPropIgnoreCase(p, ['id','ID','IDS','Id']) || '').toString();
-    const name = getPropIgnoreCase(p, ['Nama_Usaha','nama_usaha','nama','nama_komersial_usaha']) || '';
-    const lat = l.feature?.geometry?.coordinates?.[1];
-    const lon = l.feature?.geometry?.coordinates?.[0];
-    if (id) swmapsIdx.set(id, { name, lat, lon });
-  });
-}
-
-/* ============================================================
-   Checkpoint → Kandidat map
-   ============================================================ */
-function rebuildCandidatesFromCheckpoint() {
-  similarityCandidatesMap.clear();
-  similarityArray.forEach(r => {
-    if (!r || !r.idsbr || !r.id || !r.sumber) return;
-    const idsbr = String(r.idsbr);
-    const sumber = String(r.sumber);
-    let name = '';
-    if (sumber.toLowerCase() === 'matchapro') {
-      name = (matchaproIdx.get(r.id) || {}).name || '';
-    } else if (sumber.toLowerCase() === 'kdm') {
-      name = (kdmIdx.get(r.id) || {}).name || '';
-    } else if (sumber.toLowerCase() === 'swmaps') {
-      name = (swmapsIdx.get(r.id) || {}).name || '';
-    }
-    const arr = similarityCandidatesMap.get(idsbr) || [];
-    arr.push({
-      sumber: sumber,
-      id: String(r.id),
-      percent: Number.isFinite(r.percent) ? r.percent : '',
-      distance: Number.isFinite(r.distance) ? r.distance : '',
-      name: name
-    });
-    similarityCandidatesMap.set(idsbr, arr);
-  });
-}
-
-document.addEventListener('DOMContentLoaded', () => {
-  document.getElementById('btnLoadPool').onclick = () => document.getElementById('filePool').click();
-  document.getElementById('btnSavePool').onclick = () => {
-    if (!pool || pool.length === 0) return showTempToast('Pool kosong!');
-    const csv = poolToCSV(pool);
-    const blob = new Blob([csv], { type: 'text/csv' });
-    const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'pool.csv'; a.click(); URL.revokeObjectURL(a.href);
-  };
-
-  document.getElementById('btnLoadSLS').onclick = () => document.getElementById('fileSLS').click();
-  document.getElementById('btnLoadPLKUMKM').onclick = () => document.getElementById('filePLKUMKM').click();
-  document.getElementById('btnLoadMATCHAPRO').onclick = () => document.getElementById('fileMATCHAPRO').click();
-  document.getElementById('btnLoadSWMAPS').onclick = () => document.getElementById('fileSWMAPS').click();
-  document.getElementById('btnLoadKDM').onclick = () => document.getElementById('fileKDM').click();
-
-  document.getElementById('filePool').onchange = async (e) => {
-    const f = e.target.files[0]; if (!f) return;
-    try {
-      showLoadingOverlay(true);
-      const text = await f.text();
-      pool = csvToPool(text);
-      rebuildPoolIndex();
-      showTempToast(`Pool dimuat (${pool.length} entri).`);
-      if (!map.hasLayer(poolOverlayGroup)) map.addLayer(poolOverlayGroup);
-      scheduleRefresh();
-      rebuildLayerIndexes();
-      refreshSummaryFlagsBatch();
-      if (summaryTableInstance) refreshSummaryTableFromLayers();
-    } catch (err) { console.warn(err); showTempToast('Gagal memuat pool. Periksa format CSV.', 2000); }
-    finally { showLoadingOverlay(false); }
-  };
-
-  document.getElementById('fileSLS').onchange = async (e) => {
-    const f = e.target.files[0]; if (!f) return;
-    try {
-      showLoadingOverlay(true);
-      const text = await f.text(); const json = JSON.parse(text);
-      slsLayer.clearLayers(); slsLayer.addData(json);
-      if (slsLayer.getLayers().length > 0) {
-        safeFitBounds(slsLayer);
-        slsSnapshot = slsLayer.getLayers().slice();
-        const kec = new Set();
-        slsSnapshot.forEach(layer => {
-          const p = layer.feature?.properties || {};
-          const nm = getPropIgnoreCase(p, ['nmkec','Nama_Kec','kecamatan']) || '';
-          if (nm) kec.add(nm);
-        });
-        fillSelectFromSet('filterKec', kec, '--Pilih Kecamatan--');
-        fillSelectFromSet('filterDesa', new Set(), '--Pilih Desa--');
-        fillSelectFromSet('filterSLS', new Set(), '--Pilih SLS--');
-      }
-      if (matchaproLayer.getLayers().length > 0) {
-        spawnWorkerTableForSummary();
-      }
-    } catch (err) { console.warn(err); showTempToast('Error parsing SLS GeoJSON', 2000); }
-    finally { showLoadingOverlay(false); }
-  };
-
-  document.getElementById('filePLKUMKM').onchange = async (e) => {
-    const f = e.target.files[0]; if (!f) return;
-    try {
-      showLoadingOverlay(true);
-      const name = (f.name || '').toLowerCase(); const text = await f.text();
-      if (name.endsWith('.csv')) {
-        const parsed = Papa.parse(text, { header:true, skipEmptyLines:true });
-        const geo = csvRowsToGeoJSON(parsed.data);
-        plkLayer.clearLayers(); plkLayer.addData(geo); safeFitBounds(plkLayer);
-      } else {
-        const json = JSON.parse(text); plkLayer.clearLayers(); plkLayer.addData(json); safeFitBounds(plkLayer);
-      }
-      showTempToast('PLKUMKM dimuat');
-    } catch (err) { console.warn(err); showTempToast('Error memuat PLKUMKM', 2000); }
-    finally { showLoadingOverlay(false); }
-  };
-
-  document.getElementById('fileSWMAPS').onchange = async (e) => {
-    const f = e.target.files[0]; if (!f) return;
-    try {
-      showLoadingOverlay(true);
-      const text = await f.text(); const parsed = Papa.parse(text, { header:true, skipEmptyLines:true }).data;
-      const geo = csvRowsToGeoJSON(parsed); swmapsLayer.clearLayers(); swmapsLayer.addData(geo); safeFitBounds(swmapsLayer);
-      scheduleRefresh();
-      rebuildLayerIndexes();
-      showTempToast('SWMAPS dimuat');
-      rebuildCandidatesFromCheckpoint();
-      if (summaryTableInstance) refreshSummaryTableFromLayers();
-    } catch (err) { console.warn(err); showTempToast('Error memuat SWMAPS', 2000); }
-    finally { showLoadingOverlay(false); }
-  };
-
-  document.getElementById('fileKDM').onchange = async (e) => {
-    const f = e.target.files[0]; if (!f) return;
-    try {
-      showLoadingOverlay(true);
-      const text = await f.text(); const parsed = Papa.parse(text, { header:true, skipEmptyLines:true }).data;
-      const geo = csvRowsToGeoJSON(parsed); kdmLayer.clearLayers(); kdmLayer.addData(geo); safeFitBounds(kdmLayer);
-      scheduleRefresh();
-      rebuildLayerIndexes();
-      showTempToast('KDM dimuat');
-      rebuildCandidatesFromCheckpoint();
-      if (summaryTableInstance) refreshSummaryTableFromLayers();
-    } catch (err) { console.warn(err); showTempToast('Error memuat KDM', 2000); }
-    finally { showLoadingOverlay(false); }
-  };
-
-  document.getElementById('fileMATCHAPRO').onchange = async (e) => {
-    const f = e.target.files[0]; if (!f) return;
-    try {
-      showLoadingOverlay(true);
-      const text = await f.text(); const parsed = Papa.parse(text, { header:true, skipEmptyLines:true }).data;
-      const geo = csvToGeoJSON_Matchapro(parsed); matchaproLayer.clearLayers(); matchaproLayer.addData(geo); safeFitBounds(matchaproLayer);
-      scheduleRefresh();
-      rebuildLayerIndexes();
-      if (slsLayer.getLayers().length > 0) {
-        spawnWorkerTableForSummary();
-      }
-      rebuildCandidatesFromCheckpoint();
-      refreshSummaryTableFromLayers();
-      showTempToast('Matchapro dimuat');
-    } catch (err) { console.warn(err); showTempToast('Error memuat Matchapro', 2000); }
-    finally { showLoadingOverlay(false); }
-  };
-
-  /* Filters */
-  const selKec = document.getElementById('filterKec'), selDesa = document.getElementById('filterDesa'), selSLS = document.getElementById('filterSLS');
-  if (selKec) selKec.addEventListener('change', () => {
-    const v = selKec.value || '';
-    populateDesaByKecamatan(v);
-    populateSLSByDesa(v, '');
-    applyFilterAndZoom();
-    refreshSummaryTableFromLayers();
-  });
-  if (selDesa) selDesa.addEventListener('change', () => {
-    const k = selKec ? selKec.value : '';
-    const d = selDesa.value || '';
-    populateSLSByDesa(k, d);
-    applyFilterAndZoom();
-    refreshSummaryTableFromLayers();
-  });
-  if (selSLS) selSLS.addEventListener('change', () => { applyFilterAndZoom(); refreshSummaryTableFromLayers(); });
-
-  /* Toggle Summary */
-  const summaryPanel = document.getElementById('summaryPanel');
-  const toggleBtn = document.getElementById('toggleSidebar');
-  toggleBtn.onclick = () => {
-    const isOpen = summaryPanel.classList.toggle('open');
-    summaryPanel.setAttribute('aria-hidden', isOpen ? 'false' : 'true');
-    const tb = document.getElementById('toolbar').getBoundingClientRect();
-    const mapRect = document.getElementById('map').getBoundingClientRect();
-    const topOffset = (tb.bottom - mapRect.top) + 8;
-    summaryPanel.style.top = `${topOffset}px`;
-    if (isOpen && !summaryTableInstance) initSummaryDataTable();
-  };
-
-  /* Summary header buttons */
-  document.getElementById('btnLoadSimilarity').onclick = () => {
-    document.getElementById('fileSimilarityLoad').click();
-  };
-  document.getElementById('btnSaveProgress').onclick = () => saveSimilarityProgressCSV();
-  document.getElementById('fileSimilarityLoad').onchange = async (e) => {
-    const f = e.target.files[0]; if (!f) return;
-    try {
-      const text = await f.text();
-      loadSimilarityProgressCSV(text);
-      showTempToast(`Similarity checkpoint dimuat (${similarityArray.length} entri).`);
-      rebuildLayerIndexes();
-      rebuildCandidatesFromCheckpoint();
-      refreshSummaryTableFromLayers();
-      const total = (matchaproLayer.toGeoJSON().features || []).length;
-      const initialDone = getProcessedIdsFromCheckpoint().size;
-      const pct = total ? Math.round((initialDone / total) * 100) : 0;
-      document.getElementById('simStatusText').textContent = `${initialDone} / ${total}`;
-      document.getElementById('simProgress').style.width = `${pct}%`;
-    } catch (err) { console.warn(err); showTempToast('Gagal memuat similarity CSV.', 1800); }
-  };
-
-  document.getElementById('btnCheckSimilarity').onclick = () => runSimilarityWorker();
-
-  /* Threshold & Group toggle */
-  const thresholdSelect = document.getElementById('thresholdSelect');
-  if (thresholdSelect) thresholdSelect.addEventListener('change', () => {
-    currentThresholdPct = parseInt(thresholdSelect.value || '60', 10);
-    refreshSummaryTableFromLayers();
-  });
-  const groupToggle = document.getElementById('groupToggle');
-  if (groupToggle) groupToggle.addEventListener('change', () => {
-    refreshSummaryTableFromLayers();
-  });
-
-  /* Modal close handlers */
-  const modalEl = document.getElementById('similarityModal');
-  const modalClose = document.getElementById('similarityModalClose');
-  const modalCloseBtn = document.getElementById('modalCloseBtn');
-  [modalClose, modalCloseBtn].forEach(btn => { if (btn) btn.onclick = () => hideSimilarityModal(); });
-  if (modalEl) {
-    modalEl.addEventListener('click', (ev) => { if (ev.target === modalEl) hideSimilarityModal(); });
-  }
-});
-
-/* ============================================================
-   Converters
-   ============================================================ */
 function csvRowsToGeoJSON(rows) {
   const getVal = (obj, keys) => { for (const k of keys) if (obj[k] !== undefined && obj[k] !== '') return obj[k]; return null; };
   const features = rows.map(r => {
@@ -1276,10 +972,80 @@ function csvToGeoJSON_Matchapro(rows) {
   }).filter(Boolean);
   return { type:'FeatureCollection', features };
 }
+function poolCSVToArray(text) {
+  const parsed = Papa.parse(text, { header: true, skipEmptyLines: true });
+  const out = [];
+  parsed.data.forEach(row => {
+    if (!row) return;
+    const idVal = (row.id || row.ID || row.idsbr || row.IDSBR || row.IdSbr || row.id_sbr || '').toString().trim();
+    const id_sumber = (row.id_sumber || row['id_sumber'] || row.ID_Sumber || '').toString().trim();
+    const flag = (row.flag || row.FLAG || row.sumber || '').toString().trim() || '-';
+    out.push({ id: idVal || '-', id_sumber: id_sumber || '-', flag: flag || '-' });
+  });
+  return out;
+}
+function poolArrayToCSV(arr) {
+  const header = 'id,id_sumber,flag\n';
+  const rows = arr.map(r => `${r.id},${r.id_sumber},${r.flag}`);
+  return header + rows.join('\n');
+}
+function rebuildPoolIndex() {
+  poolIndex.byId.clear(); poolIndex.bySource.clear(); poolIndex.keyed.clear();
+  for (const r of pool) {
+    const idStr = String(r.id || '').trim();
+    const srcStr = String(r.id_sumber || '').trim();
+    if (idStr) {
+      poolIndex.keyed.add(idStr);
+      const arr = poolIndex.byId.get(idStr) || [];
+      arr.push(r); poolIndex.byId.set(idStr, arr);
+    }
+    if (srcStr) {
+      poolIndex.keyed.add(srcStr);
+      const arr2 = poolIndex.bySource.get(srcStr) || [];
+      arr2.push(r); poolIndex.bySource.set(srcStr, arr2);
+    }
+  }
+}
+function pushPool(entry) {
+  const id = (entry.id || '-').toString();
+  const id_sumber = (entry.id_sumber || '-').toString();
+  const flag = (entry.flag || '-').toString();
+
+  if (flag.toLowerCase().includes('duplikat') && id !== '-' && id_sumber !== '-' && id === id_sumber) {
+    showTempToast('ID tidak boleh sama dengan ID sumber untuk status Duplikat!', 2000);
+    return false;
+  }
+  const existingById = poolIndex.byId.get(id) || [];
+  const exists = existingById.some(p => String(p.id_sumber)===id_sumber && String(p.flag)===flag);
+  if (exists) { showTempToast('Relasi sudah ada di pool'); return false; }
+
+  const newEntry = { id, id_sumber, flag };
+  pool.push(newEntry);
+
+  if (id) {
+    poolIndex.keyed.add(id);
+    const arr = poolIndex.byId.get(id) || [];
+    arr.push(newEntry); poolIndex.byId.set(id, arr);
+  }
+  if (id_sumber) {
+    poolIndex.keyed.add(id_sumber);
+    const arr2 = poolIndex.bySource.get(id_sumber) || [];
+    arr2.push(newEntry); poolIndex.bySource.set(id_sumber, arr2);
+  }
+  return true;
+}
 
 /* ============================================================
-   Filters
+   BLOK: FILTERS (dropdown kecamatan/desa/SLS, zoom aman)
    ============================================================ */
+function fillSelectFromSet(id, setValues, placeholder) {
+  const sel = document.getElementById(id); if (!sel) return;
+  sel.innerHTML = '';
+  const opt0 = document.createElement('option'); opt0.value = ''; opt0.textContent = placeholder; sel.appendChild(opt0);
+  Array.from(setValues).filter(Boolean).sort((a,b)=>String(a).localeCompare(String(b))).forEach(v => {
+    const o = document.createElement('option'); o.value = v; o.textContent = v; sel.appendChild(o);
+  });
+}
 function populateDesaByKecamatan(kecTerpilih) {
   const desaSet = new Set();
   slsSnapshot.forEach(layer => {
@@ -1304,14 +1070,6 @@ function populateSLSByDesa(kecTerpilih, desaTerpilih) {
     }
   });
   fillSelectFromSet('filterSLS', slsSet, '--Pilih SLS--');
-}
-function fillSelectFromSet(id, setValues, placeholder) {
-  const sel = document.getElementById(id); if (!sel) return;
-  sel.innerHTML = '';
-  const opt0 = document.createElement('option'); opt0.value = ''; opt0.textContent = placeholder; sel.appendChild(opt0);
-  Array.from(setValues).filter(Boolean).sort((a,b)=>String(a).localeCompare(String(b))).forEach(v => {
-    const o = document.createElement('option'); o.value = v; o.textContent = v; sel.appendChild(o);
-  });
 }
 function safeFitBounds(layer) {
   if (!layer) return;
@@ -1345,98 +1103,7 @@ function applyFilterAndZoom() {
 }
 
 /* ============================================================
-   Summary table & SLS membership mapping (worker)
-   ============================================================ */
-let workerTable = null;
-function spawnWorkerTableForSummary() {
-  if (workerTable) { workerTable.terminate(); workerTable = null; }
-  const slsFeatures = slsLayer.toGeoJSON().features || [];
-  const matchFeatures = matchaproLayer.toGeoJSON().features || [];
-  const payload = { sls: slsFeatures, match: matchFeatures };
-
-  /* Worker point-in-polygon (fixed loop) */
-  const workerCode = `
-    self.onmessage = function(e) {
-      var sls = e.data.sls || [];
-      var match = e.data.match || [];
-      function pointInRing(x, y, ring) {
-        var inside = false;
-        for (var i = 0, j = ring.length - 1; i < ring.length; j = i, i++) {
-          var xi = ring[i][0], yi = ring[i][1];
-          var xj = ring[j][0], yj = ring[j][1];
-          var intersect = ((yi > y) !== (yj > y)) && (x < (xj - xi) * (y - yi) / (yj - yi) + xi);
-          if (intersect) inside = !inside;
-        }
-        return inside;
-      }
-      var out = [];
-      var slsIndex = [];
-      sls.forEach(function(f){
-        var geom = f.geometry;
-        if (!geom) return;
-        if (geom.type === 'Polygon') {
-          var ring = geom.coordinates[0] || [];
-          if (!ring.length) return;
-          var minx=1e9,miny=1e9,maxx=-1e9,maxy=-1e9;
-          ring.forEach(function(c){ minx=Math.min(minx,c[0]); maxx=Math.max(maxx,c[0]); miny=Math.min(miny,c[1]); maxy=Math.max(maxy,c[1]); });
-          slsIndex.push({ feature:f, ring:ring, bbox:[minx,miny,maxx,maxy] });
-        } else if (geom.type === 'MultiPolygon') {
-          var polys = geom.coordinates || [];
-          polys.forEach(function(poly){
-            var ring = (poly && poly[0]) || [];
-            if (!ring.length) return;
-            var minx=1e9,miny=1e9,maxx=-1e9,maxy=-1e9;
-            ring.forEach(function(c){ minx=Math.min(minx,c[0]); maxx=Math.max(maxx,c[0]); miny=Math.min(miny,c[1]); maxy=Math.max(maxy,c[1]); });
-            slsIndex.push({ feature:f, ring:ring, bbox:[minx,miny,maxx,maxy] });
-          });
-        }
-      });
-      for (var i=0;i<match.length;i++) {
-        var m = match[i];
-        var lon = (m.geometry && m.geometry.coordinates) ? m.geometry.coordinates[0] : null;
-        var lat = (m.geometry && m.geometry.coordinates) ? m.geometry.coordinates[1] : null;
-        if (lon==null || lat==null) continue;
-        var found = { kecamatan:'', desa:'', nmsls:'' };
-        for (var si=0; si<slsIndex.length; si++) {
-          var s = slsIndex[si];
-          var minx=s.bbox[0], miny=s.bbox[1], maxx=s.bbox[2], maxy=s.bbox[3];
-          if (lon < minx || lon > maxx || lat < miny || lat > maxy) continue;
-          if (pointInRing(lon, lat, s.ring)) {
-            var p = s.feature.properties || {};
-            var kec = p.nmkec || p.Nama_Kec || p.kecamatan || p.NAMA_KEC || '';
-            var desa = p.nmdesa || p.Nama_Desa || p.desa || '';
-            var nmsls = p.nmsls || p.NMSLS || p.nmsls_name || p.Nama_SLS || '';
-            found = { kecamatan:(kec||''), desa:(desa||''), nmsls:(nmsls||'') };
-            break;
-          }
-        }
-        var idv = (m.properties && (m.properties.idsbr || m.properties.IDSBR || m.properties.id_sbr || m.properties.id)) || '';
-        out.push({ id: idv, kecamatan: found.kecamatan, desa: found.desa, nmsls: found.nmsls });
-      }
-      postMessage({ type:'done', data: out });
-    };`;
-
-  const blob = new Blob([workerCode], { type: 'application/javascript' });
-  const url = URL.createObjectURL(blob);
-  workerTable = new Worker(url);
-  workerTable.onmessage = function(ev) {
-    if (ev.data && ev.data.type === 'done') {
-      URL.revokeObjectURL(url);
-      workerTable.terminate(); workerTable = null;
-      const mapping = {};
-      ev.data.data.forEach(item => mapping[item.id] = item);
-      matchaproLayer.eachLayer(l => {
-        const mId = (l.feature && (l.feature.properties.idsbr || l.feature.properties.IDSBR || l.feature.properties.id_sbr || l.feature.properties.id)) || '';
-        l.__region = mapping[mId] || { kecamatan:'', desa:'', nmsls:'' };
-      });
-      refreshSummaryTableFromLayers();
-    }
-  };
-  workerTable.postMessage(payload);
-}
-
-/* ============================================================
-   Summary DataTable (UI & UX)
+   BLOK: SUMMARY TABLE (DataTables init, refresh builder)
    ============================================================ */
 function initSummaryDataTable() {
   summaryTableInstance = $('#summaryTable').DataTable({
@@ -1539,36 +1206,178 @@ function initSummaryDataTable() {
     }
   });
 
-  /* Save/Delete placeholders untuk similarityArray */
-  $('#summaryTable').on('click', 'span.save-icon', function() {
-    const id = this.dataset.id;
-    const existing = similarityArray.find(x=>x.idsbr===id);
-    if (!existing) {
-      similarityArray.push({ idsbr: id, sumber: 'Matchapro', id: id, percent: 0, distance: '' });
-      showTempToast('Similarity disimpan (placeholder)');
-    } else {
-      showTempToast('Similarity sudah ada');
-    }
-    rebuildCandidatesFromCheckpoint();
-    refreshSummaryTableFromLayers();
-  });
-  $('#summaryTable').on('click', 'span.del-icon', function() {
-    const id = this.dataset.id;
-    similarityArray = similarityArray.filter(x=>x.idsbr !== id);
-    rebuildCandidatesFromCheckpoint();
-    showTempToast('Similarity dihapus');
-    refreshSummaryTableFromLayers();
-  });
-  $('#summaryTable').on('click', 'span.view-icon', function() {
-    const id = this.dataset.id;
-    showSimilarityModalForId(id);
-  });
-
   refreshSummaryTableFromLayers();
 }
 
+function refreshSummaryFlagsBatch() {
+  if (!summaryTableInstance) return;
+  const rows = summaryTableInstance.rows().data().toArray();
+  const updated = rows.map(r => {
+    const flags = [
+      ...(poolIndex.byId.get(r.id) || []).map(x => x.flag),
+      ...(poolIndex.bySource.get(r.id) || []).map(x => x.flag)
+    ];
+    const combined = Array.from(new Set(flags)).join('; ');
+    const hasPoolFlag = flags.length > 0;
+    return Object.assign({}, r, { flag: combined, flagOrigin: hasPoolFlag ? 'pool' : r.flagOrigin || 'similarity' });
+  });
+  summaryTableInstance.clear();
+  summaryTableInstance.rows.add(updated);
+  summaryTableInstance.draw(false);
+}
+
+function refreshSummaryTableFromLayers() {
+  if (!summaryTableInstance) return;
+  const k = (document.getElementById('filterKec')?.value || '').toString();
+  const d = (document.getElementById('filterDesa')?.value || '').toString();
+  const s = (document.getElementById('filterSLS')?.value || '').toString();
+  const isGrouped = document.getElementById('groupToggle')?.checked;
+
+  const flatRows = [];
+  const groupedMap = new Map();
+  const seen = new Set();
+
+  matchaproLayer.eachLayer(lay => {
+    const feat = lay.feature;
+    const props = feat?.properties || {};
+    const id = (props.idsbr || props.IDSBR || props.IdSbr || props.id_sbr || props.id || '').toString();
+    const nama = getPropIgnoreCase(props, ['nama_usaha','Nama_Usaha','nama','nama_komersial_usaha']) || '-';
+    const lat = feat?.geometry?.coordinates?.[1];
+    const lon = feat?.geometry?.coordinates?.[0];
+    const region = lay.__region || { kecamatan:'', desa:'', nmsls:'' };
+
+    if (k && String(region.kecamatan) !== String(k)) return;
+    if (d && String(region.desa) !== String(d)) return;
+    if (s && String(region.nmsls) !== String(s)) return;
+
+    if (!groupedMap.has(id)) {
+      groupedMap.set(id, {
+        baseRow: {
+          id, nama,
+          matchapro_display:'', kdm:'', swmaps:'',
+          percent:'', distance:'',
+          flag:'', flagOrigin:'', kecamatan:region.kecamatan||'', desa:region.desa||'', sls:region.nmsls||'',
+          action: buildRowActionsHTML(id)
+        },
+        details: []
+      });
+    }
+
+    /* Pool-based rows */
+    const rels = poolIndex.byId.get(id) || [];
+    rels.forEach(r => {
+      const key = `${id}|${r.flag}|${r.id_sumber}`;
+      if (seen.has(key)) return;
+
+      let matchapro_display = '';
+      let kdmTxt = '';
+      let swmapsTxt = '';
+      let percent = '';
+      let distance = '';
+      const flagStr = r.flag || '';
+
+      if (flagStr.toLowerCase().includes('duplikat')) {
+        const tgt = matchaproIdx.get(r.id_sumber);
+        matchapro_display = tgt ? `${r.id_sumber} ${tgt.name || ''}` : `${r.id_sumber}`;
+        percent = tgt ? computePercentByNames(nama, tgt.name) : '';
+        distance = tgt ? computeDistanceMeters(lat, lon, tgt.lat, tgt.lon) : '';
+      } else if (flagStr === 'KDM') {
+        const tgt = kdmIdx.get(r.id_sumber);
+        kdmTxt = tgt ? `${r.id_sumber} ${tgt.name || ''}` : `${r.id_sumber}`;
+        percent = tgt ? computePercentByNames(nama, tgt.name) : '';
+        distance = tgt ? computeDistanceMeters(lat, lon, tgt.lat, tgt.lon) : '';
+      } else if (flagStr === 'SWMAPS') {
+        const tgt = swmapsIdx.get(r.id_sumber);
+        swmapsTxt = tgt ? `${r.id_sumber} ${tgt.name || ''}` : `${r.id_sumber}`;
+        percent = tgt ? computePercentByNames(nama, tgt.name) : '';
+        distance = tgt ? computeDistanceMeters(lat, lon, tgt.lat, tgt.lon) : '';
+      }
+
+      const rowObj = {
+        id, nama,
+        matchapro_display, kdm: kdmTxt, swmaps: swmapsTxt,
+        percent, distance,
+        flag: flagStr, flagOrigin: 'pool',
+        kecamatan: region.kecamatan || '', desa: region.desa || '', sls: region.nmsls || '',
+        action: buildRowActionsHTML(id)
+      };
+
+      flatRows.push(rowObj);
+      groupedMap.get(id).details.push(rowObj);
+      seen.add(key);
+    });
+
+    /* Similarity-based rows (≥ currentThresholdPct) */
+    const cands = similarityCandidatesMap.get(id) || [];
+    cands.forEach(c => {
+      if (c.percent < currentThresholdPct) return;
+
+      const poolKey = `${id}|${c.sumber}|${c.id}`;
+      if (seen.has(poolKey)) return;
+
+      let matchapro_display = '';
+      let kdmTxt = '';
+      let swmapsTxt = '';
+      let flagStr = c.sumber;
+      if (flagStr.toLowerCase() === 'matchapro') flagStr = 'Duplikat';
+
+      if (flagStr === 'Duplikat') {
+        matchapro_display = `${c.id} ${c.name || ''}`;
+      } else if (flagStr === 'KDM') {
+        kdmTxt = `${c.id} ${c.name || ''}`;
+      } else if (flagStr === 'SWMAPS') {
+        swmapsTxt = `${c.id} ${c.name || ''}`;
+      }
+
+      const rowObj = {
+        id, nama,
+        matchapro_display, kdm: kdmTxt, swmaps: swmapsTxt,
+        percent: c.percent, distance: Math.round(c.distance),
+        flag: flagStr, flagOrigin: 'similarity',
+        kecamatan: region.kecamatan || '', desa: region.desa || '', sls: region.nmsls || '',
+        action: buildRowActionsHTML(id)
+      };
+
+      flatRows.push(rowObj);
+      groupedMap.get(id).details.push(rowObj);
+      seen.add(poolKey);
+    });
+  });
+
+  summaryFlatRows = flatRows;
+
+  const groupedRows = Array.from(groupedMap.values()).map(grp => {
+    const base = grp.baseRow;
+    const countDup = grp.details.filter(x => x.flag.toLowerCase().includes('duplikat')).length;
+    const countKDM = grp.details.filter(x => x.flag === 'KDM').length;
+    const countSW = grp.details.filter(x => x.flag === 'SWMAPS').length;
+
+    const dupText = countDup ? `${countDup} kandidat` : '';
+    const kdmText = countKDM ? `${countKDM} kandidat` : '';
+    const swText = countSW ? `${countSW} kandidat` : '';
+
+    return {
+      id: base.id,
+      nama: base.nama,
+      matchapro_display: dupText,
+      kdm: kdmText,
+      swmaps: swText,
+      percent: '', distance: '',
+      flag: grp.details.map(x=>x.flag).filter(Boolean).join('; '),
+      flagOrigin: grp.details.some(x=>x.flagOrigin==='pool') ? 'pool' : 'similarity',
+      kecamatan: base.kecamatan, desa: base.desa, sls: base.sls,
+      action: base.action
+    };
+  });
+  summaryGroupedRows = groupedRows;
+
+  summaryTableInstance.clear();
+  summaryTableInstance.rows.add(isGrouped ? summaryGroupedRows : summaryFlatRows);
+  summaryTableInstance.draw(false);
+}
+
 /* ============================================================
-   Detail kandidat group-per-ID (collapsible child rows)
+   BLOK: CHILD DETAIL & MODAL (detail kandidat per ID & modal)
    ============================================================ */
 function buildChildDetailHTML(idsbr) {
   const base = matchaproIdx.get(idsbr) || { name:'', lat:null, lon:null };
@@ -1651,46 +1460,9 @@ function buildChildDetailHTML(idsbr) {
         <tbody>${rowsHtml || '<tr><td colspan="7" class="small-muted">Tidak ada kandidat pada threshold saat ini.</td></tr>'}</tbody>
       </table>
     </div>`;
-
-  setTimeout(() => {
-    document.querySelectorAll('button.action-dupl').forEach(btn => {
-      btn.onclick = () => {
-        const id = btn.getAttribute('data-id'), id_sumber = btn.getAttribute('data-id_sumber');
-        if (pushPool({ id, id_sumber, flag:'Duplikat' })) {
-          showTempToast('Duplikat tersimpan');
-          rebuildPoolIndex(); scheduleRefresh();
-          refreshSummaryFlagsBatch(); rebuildCandidatesFromCheckpoint(); refreshSummaryTableFromLayers();
-        }
-      };
-    });
-    document.querySelectorAll('button.action-match-kdm').forEach(btn => {
-      btn.onclick = () => {
-        const id = btn.getAttribute('data-id'), id_sumber = btn.getAttribute('data-id_sumber');
-        if (pushPool({ id, id_sumber, flag:'KDM' })) {
-          showTempToast('Matching KDM tersimpan');
-          rebuildPoolIndex(); scheduleRefresh();
-          refreshSummaryFlagsBatch(); rebuildCandidatesFromCheckpoint(); refreshSummaryTableFromLayers();
-        }
-      };
-    });
-    document.querySelectorAll('button.action-match-sw').forEach(btn => {
-      btn.onclick = () => {
-        const id = btn.getAttribute('data-id'), id_sumber = btn.getAttribute('data-id_sumber');
-        if (pushPool({ id, id_sumber, flag:'SWMAPS' })) {
-          showTempToast('Matching SWMAPS tersimpan');
-          rebuildPoolIndex(); scheduleRefresh();
-          refreshSummaryFlagsBatch(); rebuildCandidatesFromCheckpoint(); refreshSummaryTableFromLayers();
-        }
-      };
-    });
-  }, 20);
-
   return html;
 }
 
-/* ============================================================
-   Modal Kandidat
-   ============================================================ */
 function showSimilarityModalForId(idsbr) {
   const modal = document.getElementById('similarityModal');
   const body = document.getElementById('similarityModalBody');
@@ -1734,55 +1506,6 @@ function showSimilarityModalForId(idsbr) {
         <hr/>`;
       body.appendChild(item);
     });
-
-    body.querySelectorAll('button.action-dupl').forEach(btn => {
-      btn.onclick = () => {
-        const id = btn.getAttribute('data-id');
-        const id_sumber = btn.getAttribute('data-id_sumber');
-        const exists = (poolIndex.byId.get(id) || []).some(p => String(p.id_sumber)===String(id_sumber) && String(p.flag).toLowerCase()==='duplikat');
-        if (exists) { return showTempToast('Relasi Duplikat sudah ada di pool'); }
-        if (pushPool({ id, id_sumber, flag: 'Duplikat' })) {
-          showTempToast('Duplikat tersimpan');
-          rebuildPoolIndex();
-          scheduleRefresh();
-          refreshSummaryFlagsBatch();
-          rebuildCandidatesFromCheckpoint();
-          refreshSummaryTableFromLayers();
-        }
-      };
-    });
-    body.querySelectorAll('button.action-match-kdm').forEach(btn => {
-      btn.onclick = () => {
-        const id = btn.getAttribute('data-id');
-        const id_sumber = btn.getAttribute('data-id_sumber');
-        const exists = (poolIndex.byId.get(id) || []).some(p => String(p.id_sumber)===String(id_sumber) && String(p.flag)==='KDM');
-        if (exists) { return showTempToast('Relasi KDM sudah ada di pool'); }
-        if (pushPool({ id, id_sumber, flag: 'KDM' })) {
-          showTempToast('Matching KDM tersimpan');
-          rebuildPoolIndex();
-          scheduleRefresh();
-          refreshSummaryFlagsBatch();
-          rebuildCandidatesFromCheckpoint();
-          refreshSummaryTableFromLayers();
-        }
-      };
-    });
-    body.querySelectorAll('button.action-match-sw').forEach(btn => {
-      btn.onclick = () => {
-        const id = btn.getAttribute('data-id');
-        const id_sumber = btn.getAttribute('data-id_sumber');
-        const exists = (poolIndex.byId.get(id) || []).some(p => String(p.id_sumber)===String(id_sumber) && String(p.flag)==='SWMAPS');
-        if (exists) { return showTempToast('Relasi SWMAPS sudah ada di pool'); }
-        if (pushPool({ id, id_sumber, flag: 'SWMAPS' })) {
-          showTempToast('Matching SWMAPS tersimpan');
-          rebuildPoolIndex();
-          scheduleRefresh();
-          refreshSummaryFlagsBatch();
-          rebuildCandidatesFromCheckpoint();
-          refreshSummaryTableFromLayers();
-        }
-      };
-    });
   }
 
   modal.style.display = 'flex';
@@ -1796,223 +1519,7 @@ function hideSimilarityModal() {
 }
 
 /* ============================================================
-   Helper kemiripan + jarak
-   ============================================================ */
-function computePercentByNames(nameA, nameB) {
-  if (!nameA || !nameB) return '';
-  const na = normalizeBusinessName(nameA);
-  const nb = normalizeBusinessName(nameB);
-  const lev = normalizedLevenshtein(na, nb);
-  const jac = jaccard(na, nb);
-  return Math.round((lev*0.6 + jac*0.4) * 100);
-}
-function computeDistanceMeters(lat1, lon1, lat2, lon2) {
-  if (![lat1,lon1,lat2,lon2].every(Number.isFinite)) return '';
-  return Math.round(haversine(lat1,lon1,lat2,lon2));
-}
-function levenshtein(a, b) {
-  if (!a) a=''; if (!b) b='';
-  const al = a.length, bl = b.length;
-  if (al === 0) return bl;
-  if (bl === 0) return al;
-  const v0 = new Array(bl+1), v1 = new Array(bl+1);
-  for (let j=0;j<=bl;j++) v0[j]=j;
-  for (let i=0;i<al;i++) {
-    v1[0]=i+1;
-    for (let j=0;j<bl;j++) {
-      const cost = a[i] === b[j] ? 0 : 1;
-      v1[j+1] = Math.min(v1[j]+1, v0[j+1]+1, v0[j]+cost);
-    }
-    for (let j2=0;j2<=bl;j2++) v0[j2]=v1[j2];
-  }
-  return v1[bl];
-}
-function normalizedLevenshtein(a,b) {
-  const maxl = Math.max((a||'').length, (b||'').length);
-  if (maxl === 0) return 1;
-  const d = levenshtein((a||''),(b||'')); return 1 - (d / maxl);
-}
-function jaccard(a,b) {
-  const sa = tokenSetNormalized(a), sb = tokenSetNormalized(b);
-  let inter = 0;
-  sa.forEach(x => { if (sb.has(x)) inter++; });
-  const uni = new Set([...sa, ...sb]).size;
-  if (uni === 0) return 0;
-  return inter/uni;
-}
-function haversine(lat1,lon1,lat2,lon2) {
-  const R = 6371000;
-  const toRad = v => v*Math.PI/180;
-  const dLat = toRad(lat2-lat1), dLon = toRad(lon2-lon1);
-  const a = Math.sin(dLat/2)*Math.sin(dLat/2) + Math.cos(toRad(lat1))*Math.cos(toRad(lat2))*Math.sin(dLon/2)*Math.sin(dLon/2);
-  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
-  return R * c;
-}
-
-/* ============================================================
-   Summary table builder — flat & grouped
-   ============================================================ */
-function refreshSummaryTableFromLayers() {
-  if (!summaryTableInstance) return;
-  const k = (document.getElementById('filterKec')?.value || '').toString();
-  const d = (document.getElementById('filterDesa')?.value || '').toString();
-  const s = (document.getElementById('filterSLS')?.value || '').toString();
-  const isGrouped = document.getElementById('groupToggle')?.checked;
-
-  const flatRows = [];
-  const groupedMap = new Map();
-  const seen = new Set();
-
-  matchaproLayer.eachLayer(lay => {
-    const feat = lay.feature;
-    const props = feat?.properties || {};
-    const id = (props.idsbr || props.IDSBR || props.IdSbr || props.id_sbr || props.id || '').toString();
-    const nama = getPropIgnoreCase(props, ['nama_usaha','Nama_Usaha','nama','nama_komersial_usaha']) || '-';
-    const lat = feat?.geometry?.coordinates?.[1];
-    const lon = feat?.geometry?.coordinates?.[0];
-    const region = lay.__region || { kecamatan:'', desa:'', nmsls:'' };
-
-    if (k && String(region.kecamatan) !== String(k)) return;
-    if (d && String(region.desa) !== String(d)) return;
-    if (s && String(region.nmsls) !== String(s)) return;
-
-    if (!groupedMap.has(id)) {
-      groupedMap.set(id, {
-        baseRow: {
-          id, nama,
-          matchapro_display:'', kdm:'', swmaps:'',
-          percent:'', distance:'',
-          flag:'', flagOrigin:'', kecamatan:region.kecamatan||'', desa:region.desa||'', sls:region.nmsls||'',
-          action: `
-            <span class="action-icon save-icon" title="Simpan similarity" data-id="${id}"></span>
-            <span class="action-icon del-icon" title="Hapus similarity" data-id="${id}"></span>
-            <span class="action-icon view-icon" title="Lihat kandidat" data-id="${id}"></span>`
-        },
-        details: []
-      });
-    }
-
-    /* Pool-based rows */
-    const rels = poolIndex.byId.get(id) || [];
-    rels.forEach(r => {
-      const key = `${id}|${r.flag}|${r.id_sumber}`;
-      if (seen.has(key)) return;
-
-      let matchapro_display = '';
-      let kdmTxt = '';
-      let swmapsTxt = '';
-      let percent = '';
-      let distance = '';
-      const flagStr = r.flag || '';
-
-      if (flagStr.toLowerCase().includes('duplikat')) {
-        const tgt = matchaproIdx.get(r.id_sumber);
-        matchapro_display = tgt ? `${r.id_sumber} ${tgt.name || ''}` : `${r.id_sumber}`;
-        percent = tgt ? computePercentByNames(nama, tgt.name) : '';
-        distance = tgt ? computeDistanceMeters(lat, lon, tgt.lat, tgt.lon) : '';
-      } else if (flagStr === 'KDM') {
-        const tgt = kdmIdx.get(r.id_sumber);
-        kdmTxt = tgt ? `${r.id_sumber} ${tgt.name || ''}` : `${r.id_sumber}`;
-        percent = tgt ? computePercentByNames(nama, tgt.name) : '';
-        distance = tgt ? computeDistanceMeters(lat, lon, tgt.lat, tgt.lon) : '';
-      } else if (flagStr === 'SWMAPS') {
-        const tgt = swmapsIdx.get(r.id_sumber);
-        swmapsTxt = tgt ? `${r.id_sumber} ${tgt.name || ''}` : `${r.id_sumber}`;
-        percent = tgt ? computePercentByNames(nama, tgt.name) : '';
-        distance = tgt ? computeDistanceMeters(lat, lon, tgt.lat, tgt.lon) : '';
-      }
-
-      const rowObj = {
-        id, nama,
-        matchapro_display, kdm: kdmTxt, swmaps: swmapsTxt,
-        percent, distance,
-        flag: flagStr, flagOrigin: 'pool',
-        kecamatan: region.kecamatan || '', desa: region.desa || '', sls: region.nmsls || '',
-        action: `
-          <span class="action-icon save-icon" title="Simpan similarity" data-id="${id}"></span>
-          <span class="action-icon del-icon" title="Hapus similarity" data-id="${id}"></span>
-          <span class="action-icon view-icon" title="Lihat kandidat" data-id="${id}"></span>`
-      };
-
-      flatRows.push(rowObj);
-      groupedMap.get(id).details.push(rowObj);
-      seen.add(key);
-    });
-
-    /* Similarity-based rows (≥ currentThresholdPct) */
-    const cands = similarityCandidatesMap.get(id) || [];
-    cands.forEach(c => {
-      if (c.percent < currentThresholdPct) return;
-
-      const poolKey = `${id}|${c.sumber}|${c.id}`;
-      if (seen.has(poolKey)) return;
-
-      let matchapro_display = '';
-      let kdmTxt = '';
-      let swmapsTxt = '';
-      let flagStr = c.sumber;
-      if (flagStr.toLowerCase() === 'matchapro') flagStr = 'Duplikat';
-
-      if (flagStr === 'Duplikat') {
-        matchapro_display = `${c.id} ${c.name || ''}`;
-      } else if (flagStr === 'KDM') {
-        kdmTxt = `${c.id} ${c.name || ''}`;
-      } else if (flagStr === 'SWMAPS') {
-        swmapsTxt = `${c.id} ${c.name || ''}`;
-      }
-
-      const rowObj = {
-        id, nama,
-        matchapro_display, kdm: kdmTxt, swmaps: swmapsTxt,
-        percent: c.percent, distance: Math.round(c.distance),
-        flag: flagStr, flagOrigin: 'similarity',
-        kecamatan: region.kecamatan || '', desa: region.desa || '', sls: region.nmsls || '',
-        action: `
-          <span class="action-icon save-icon" title="Simpan similarity" data-id="${id}"></span>
-          <span class="action-icon del-icon" title="Hapus similarity" data-id="${id}"></span>
-          <span class="action-icon view-icon" title="Lihat kandidat" data-id="${id}"></span>`
-      };
-
-      flatRows.push(rowObj);
-      groupedMap.get(id).details.push(rowObj);
-      seen.add(poolKey);
-    });
-  });
-
-  summaryFlatRows = flatRows;
-
-  const groupedRows = Array.from(groupedMap.values()).map(grp => {
-    const base = grp.baseRow;
-    const countDup = grp.details.filter(x => x.flag.toLowerCase().includes('duplikat')).length;
-    const countKDM = grp.details.filter(x => x.flag === 'KDM').length;
-    const countSW = grp.details.filter(x => x.flag === 'SWMAPS').length;
-
-    const dupText = countDup ? `${countDup} kandidat` : '';
-    const kdmText = countKDM ? `${countKDM} kandidat` : '';
-    const swText = countSW ? `${countSW} kandidat` : '';
-
-    return {
-      id: base.id,
-      nama: base.nama,
-      matchapro_display: dupText,
-      kdm: kdmText,
-      swmaps: swText,
-      percent: '', distance: '',
-      flag: grp.details.map(x=>x.flag).filter(Boolean).join('; '),
-      flagOrigin: grp.details.some(x=>x.flagOrigin==='pool') ? 'pool' : 'similarity',
-      kecamatan: base.kecamatan, desa: base.desa, sls: base.sls,
-      action: base.action
-    };
-  });
-  summaryGroupedRows = groupedRows;
-
-  summaryTableInstance.clear();
-  summaryTableInstance.rows.add(isGrouped ? summaryGroupedRows : summaryFlatRows);
-  summaryTableInstance.draw(false);
-}
-
-/* ============================================================
-   Zoom + koneksi garis kandidat
+   BLOK: ZOOM & KONEKSI GARIS (visualisasi relasi)
    ============================================================ */
 function zoomToMatchaproById(id) {
   if (!id) return;
@@ -2105,55 +1612,97 @@ function buildConnectionLinesForId(idsbr) {
 }
 
 /* ============================================================
-   Flags summary & Save/Load checkpoint similarity
+   BLOK: PIP WORKER (point‑in‑polygon untuk SLS membership)
    ============================================================ */
-function refreshSummaryFlagsBatch() {
-  if (!summaryTableInstance) return;
-  const rows = summaryTableInstance.rows().data().toArray();
-  const updated = rows.map(r => {
-    const flags = [
-      ...(poolIndex.byId.get(r.id) || []).map(x => x.flag),
-      ...(poolIndex.bySource.get(r.id) || []).map(x => x.flag)
-    ];
-    const combined = Array.from(new Set(flags)).join('; ');
-    const hasPoolFlag = flags.length > 0;
-    return Object.assign({}, r, { flag: combined, flagOrigin: hasPoolFlag ? 'pool' : r.flagOrigin || 'similarity' });
-  });
-  summaryTableInstance.clear();
-  summaryTableInstance.rows.add(updated);
-  summaryTableInstance.draw(false);
-}
+let workerTable = null;
+function spawnWorkerTableForSummary() {
+  if (workerTable) { workerTable.terminate(); workerTable = null; }
+  const slsFeatures = slsLayer.toGeoJSON().features || [];
+  const matchFeatures = matchaproLayer.toGeoJSON().features || [];
+  const payload = { sls: slsFeatures, match: matchFeatures };
 
-function saveSimilarityProgressCSV() {
-  if (!similarityArray || similarityArray.length === 0) {
-    showTempToast('Belum ada progres similarity untuk disimpan.');
-    return;
-  }
-  const header = 'idsbr,sumber,id,percent,distance\n';
-  const rows = similarityArray.map(r => `${r.idsbr},${r.sumber},${r.id},${r.percent},${r.distance}`);
-  const csv = header + rows.join('\n');
-  const blob = new Blob([csv], { type: 'text/csv' });
-  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'similarity_checkpoint.csv'; a.click(); URL.revokeObjectURL(a.href);
-  showTempToast('Checkpoint similarity disimpan.');
-}
+  const workerCode = `
+    self.onmessage = function(e) {
+      var sls = e.data.sls || [];
+      var match = e.data.match || [];
+      function pointInRing(x, y, ring) {
+        var inside = false;
+        for (var i = 0, j = ring.length - 1; i < ring.length; j = i, i++) {
+          var xi = ring[i][0], yi = ring[i][1];
+          var xj = ring[j][0], yj = ring[j][1];
+          var intersect = ((yi > y) !== (yj > y)) && (x < (xj - xi) * (y - yi) / (yj - yi) + xi);
+          if (intersect) inside = !inside;
+        }
+        return inside;
+      }
+      var out = [];
+      var slsIndex = [];
+      sls.forEach(function(f){
+        var geom = f.geometry;
+        if (!geom) return;
+        if (geom.type === 'Polygon') {
+          var ring = geom.coordinates[0] || [];
+          if (!ring.length) return;
+          var minx=1e9,miny=1e9,maxx=-1e9,maxy=-1e9;
+          ring.forEach(function(c){ minx=Math.min(minx,c[0]); maxx=Math.max(maxx,c[0]); miny=Math.min(miny,c[1]); maxy=Math.max(maxy,c[1]); });
+          slsIndex.push({ feature:f, ring:ring, bbox:[minx,miny,maxx,maxy] });
+        } else if (geom.type === 'MultiPolygon') {
+          var polys = geom.coordinates || [];
+          polys.forEach(function(poly){
+            var ring = (poly && poly[0]) || [];
+            if (!ring.length) return;
+            var minx=1e9,miny=1e9,maxx=-1e9,maxy=-1e9;
+            ring.forEach(function(c){ minx=Math.min(minx,c[0]); maxx=Math.max(maxx,c[0]); miny=Math.min(miny,c[1]); maxy=Math.max(maxy,c[1]); });
+            slsIndex.push({ feature:f, ring:ring, bbox:[minx,miny,maxx,maxy] });
+          });
+        }
+      });
+      for (var i=0;i<match.length;i++) {
+        var m = match[i];
+        var lon = (m.geometry && m.geometry.coordinates) ? m.geometry.coordinates[0] : null;
+        var lat = (m.geometry && m.geometry.coordinates) ? m.geometry.coordinates[1] : null;
+        if (lon==null || lat==null) continue;
+        var found = { kecamatan:'', desa:'', nmsls:'' };
+        for (var si=0; si<slsIndex.length; si++) {
+          var s = slsIndex[si];
+          var minx=s.bbox[0], miny=s.bbox[1], maxx=s.bbox[2], maxy=s.bbox[3];
+          if (lon < minx || lon > maxx || lat < miny || lat > maxy) continue;
+          if (pointInRing(lon, lat, s.ring)) {
+            var p = s.feature.properties || {};
+            var kec = p.nmkec || p.Nama_Kec || p.kecamatan || p.NAMA_KEC || '';
+            var desa = p.nmdesa || p.Nama_Desa || p.desa || '';
+            var nmsls = p.nmsls || p.NMSLS || p.nmsls_name || p.Nama_SLS || '';
+            found = { kecamatan:(kec||''), desa:(desa||''), nmsls:(nmsls||'') };
+            break;
+          }
+        }
+        var idv = (m.properties && (m.properties.idsbr || m.properties.IDSBR || m.properties.id_sbr || m.properties.id)) || '';
+        out.push({ id: idv, kecamatan: found.kecamatan, desa: found.desa, nmsls: found.nmsls });
+      }
+      postMessage({ type:'done', data: out });
+    };`;
 
-function loadSimilarityProgressCSV(text) {
-  const parsed = Papa.parse(text, { header:true, skipEmptyLines:true });
-  const out = [];
-  parsed.data.forEach(row => {
-    if (!row) return;
-    const idsbr = (row.idsbr || row.IDSBR || '').toString().trim();
-    const sumber = (row.sumber || row.Sumber || '').toString().trim();
-    const id = (row.id || row.ID || '').toString().trim();
-    const percent = parseInt(row.percent || row.Percent || '0', 10);
-    const distance = parseFloat(row.distance || row.Distance || '0');
-    if (idsbr) out.push({ idsbr, sumber, id, percent, distance });
-  });
-  similarityArray = out;
+  const blob = new Blob([workerCode], { type: 'application/javascript' });
+  const url = URL.createObjectURL(blob);
+  workerTable = new Worker(url);
+  workerTable.onmessage = function(ev) {
+    if (ev.data && ev.data.type === 'done') {
+      URL.revokeObjectURL(url);
+      workerTable.terminate(); workerTable = null;
+      const mapping = {};
+      ev.data.data.forEach(item => mapping[item.id] = item);
+      matchaproLayer.eachLayer(l => {
+        const mId = (l.feature && (l.feature.properties.idsbr || l.feature.properties.IDSBR || l.feature.properties.id_sbr || l.feature.properties.id)) || '';
+        l.__region = mapping[mId] || { kecamatan:'', desa:'', nmsls:'' };
+      });
+      refreshSummaryTableFromLayers();
+    }
+  };
+  workerTable.postMessage(payload);
 }
 
 /* ============================================================
-   Similarity — inline blob worker (fixed)
+   BLOK: SIMILARITY WORKER (grid, skor nama+jarak, progres)
    ============================================================ */
 let similarityRunning = false;
 function getProcessedIdsFromCheckpoint() {
@@ -2162,60 +1711,28 @@ function getProcessedIdsFromCheckpoint() {
   return set;
 }
 
+/* Enrichment kandidat — satu sumber */
+function enrichCandidatesWithNames(rawMap) {
+  const outMap = new Map();
+  for (const idsbr in rawMap) {
+    const arr = rawMap[idsbr] || [];
+    const enriched = arr.map(c => {
+      const src = String(c.sumber || '').toLowerCase();
+      const name =
+        src === 'matchapro' ? (matchaproIdx.get(c.id)?.name || '') :
+        src === 'kdm'       ? (kdmIdx.get(c.id)?.name || '') :
+        src === 'swmaps'    ? (swmapsIdx.get(c.id)?.name || '') : '';
+      return { sumber: c.sumber, id: c.id, percent: c.percent, distance: c.distance, name };
+    });
+    outMap.set(String(idsbr), enriched);
+  }
+  return outMap;
+}
+
 function buildSimilarityWorkerCode() {
   return `
-    var R = 6371000;
-    function toRad(v){ return v*Math.PI/180; }
-    function haversine(lat1,lon1,lat2,lon2){
-      var dLat = toRad(lat2-lat1), dLon = toRad(lon2-lon1);
-      var a = Math.sin(dLat/2)*Math.sin(dLat/2) + Math.cos(toRad(lat1))*Math.cos(toRad(lat2))*Math.sin(dLon/2)*Math.sin(dLon/2);
-      var c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
-      return R * c;
-    }
-    function normalizeBusinessName(raw){
-      var s = String(raw||'').toLowerCase();
-      var t = s.replace(/[^a-z0-9\\s]/g,' ').replace(/\\b\\d+\\b/g,' ');
-      var BUSINESS_FORMS = ['pt','cv','ud','firma','kop','koperasi','bumn','bumd','tbk','po','pd','pm','cv.','pt.','ud.'];
-      var GENERIC_WORDS = ['toko','warung','mart','minimarket','supermarket','usaha','kedai','kios','resto','rumah','makan','rm','rm.','cafe','kafe','jual','jual-beli'];
-      var EXTRA_STOPWORDS = ['jaya','abadi','sejahtera','makmur','sukses','indah','mulia','bersama','prima','maju','lestari','sentosa','group','grup','indonesia'];
-      return t.split(/\\s+/).filter(Boolean)
-        .filter(function(w){return BUSINESS_FORMS.indexOf(w)===-1;})
-        .filter(function(w){return GENERIC_WORDS.indexOf(w)===-1;})
-        .filter(function(w){return EXTRA_STOPWORDS.indexOf(w)===-1;})
-        .join(' ').trim();
-    }
-    function tokenSetNormalized(raw){
-      var t = normalizeBusinessName(raw);
-      var out = new Set();
-      t.split(/\\s+/).filter(Boolean).forEach(function(w){ out.add(w); });
-      return out;
-    }
-    function levenshtein(a,b){
-      a=String(a||''); b=String(b||'');
-      var al=a.length, bl=b.length;
-      if(!al) return bl; if(!bl) return al;
-      var v0=new Array(bl+1), v1=new Array(bl+1);
-      for(var j=0;j<=bl;j++) v0[j]=j;
-      for(var i=0;i<al;i++){
-        v1[0]=i+1;
-        for(var j=0;j<bl;j++){
-          var cost = (a[i]===b[j])?0:1;
-          v1[j+1]=Math.min(v1[j]+1, v0[j+1]+1, v0[j]+cost);
-        }
-        for(var j2=0;j2<=bl;j2++) v0[j2]=v1[j2];
-      }
-      return v1[bl];
-    }
-    function normalizedLevenshtein(a,b){
-      var maxl=Math.max(String(a||'').length,String(b||'').length); if(!maxl) return 1;
-      return 1 - (levenshtein(a,b)/maxl);
-    }
-    function jaccard(a,b){
-      var sa=tokenSetNormalized(a), sb=tokenSetNormalized(b), inter=0;
-      sa.forEach(function(x){ if(sb.has(x)) inter++; });
-      var uni=new Set([].concat(Array.from(sa), Array.from(sb))).size;
-      return uni? (inter/uni) : 0;
-    }
+${similarityUtilsSource()}
+    function toRad(v){ return v*Math.PI/180; } // helper lokal untuk grid neighbor
     function gridCellFor(lon,lat,cellDeg){
       var gx=Math.floor(lon/cellDeg), gy=Math.floor(lat/cellDeg);
       return gx+':'+gy;
@@ -2252,7 +1769,7 @@ function buildSimilarityWorkerCode() {
       var gridSW = buildGridIndex(swmaps, cellDeg);
 
       var similarities = []; // { idsbr, sumber, id, percent, distance }
-      var candidatesMapRaw = {}; // idsbr -> array { sumber,id,percent,distance,name:'' }
+      var candidatesMapRaw = {}; // idsbr -> array { sumber,id,percent,distance }
 
       var total = match.length;
       var doneCounter = processedSet.size;
@@ -2292,7 +1809,7 @@ function buildSimilarityWorkerCode() {
           var lev = normalizedLevenshtein(mnameNorm, onorm);
           var jac = jaccard(mnameNorm, onorm);
           var scorePct = Math.round((lev*0.6 + jac*0.4)*100);
-          candidatesForThis.push({ sumber: sumber, id: String(oid), percent: scorePct, distance: d, name: '' });
+          candidatesForThis.push({ sumber: sumber, id: String(oid), percent: scorePct, distance: d });
         }
 
         for(var ni=0; ni<neigh.length; ni++){
@@ -2345,8 +1862,7 @@ function runSimilarityWorker() {
   const initialDone = processedSet.length;
 
   similarityRunning = true;
-  document.getElementById('simStatusText').textContent = `${initialDone} / ${total}`;
-  document.getElementById('simProgress').style.width = total ? `${Math.round((initialDone/total)*100)}%` : '0%';
+  updateSimProgress(initialDone, total);
 
   const workerCode = buildSimilarityWorkerCode();
   const blob = new Blob([workerCode], { type: 'application/javascript' });
@@ -2357,13 +1873,13 @@ function runSimilarityWorker() {
     const data = ev.data || {};
     if (data.type === 'progress') {
       const doneDisplay = Math.min(total, data.done);
-      document.getElementById('simStatusText').textContent = `${doneDisplay} / ${total}`;
-      document.getElementById('simProgress').style.width = total ? `${Math.round((doneDisplay/total)*100)}%` : '0%';
+      updateSimProgress(doneDisplay, total);
       if (doneDisplay > 0 && doneDisplay % 100 === 0) {
-        rebuildCandidatesFromCheckpoint();
+        // Refresh ringan saat progres kelipatan 100
         refreshSummaryTableFromLayers();
       }
     } else if (data.type === 'final') {
+      // Merge hasil baru dengan checkpoint lama
       const merged = new Map();
       similarityArray.forEach(r => merged.set(`${r.idsbr}|${r.sumber}|${r.id}`, r));
       (data.similarities || []).forEach(g => {
@@ -2372,31 +1888,12 @@ function runSimilarityWorker() {
       });
       similarityArray = Array.from(merged.values());
 
-      similarityCandidatesMap.clear();
-      const raw = data.candidatesMapRaw || {};
-      for (const idsbr in raw) {
-        const arr = raw[idsbr] || [];
-        const enriched = arr.map(c => {
-          let name = '';
-          const sumberLower = String(c.sumber || '').toLowerCase();
-          if (sumberLower === 'matchapro') {
-            name = (matchaproIdx.get(c.id) || {}).name || '';
-          } else if (sumberLower === 'kdm') {
-            name = (kdmIdx.get(c.id) || {}).name || '';
-          } else if (sumberLower === 'swmaps') {
-            name = (swmapsIdx.get(c.id) || {}).name || '';
-          }
-          return { sumber: c.sumber, id: c.id, percent: c.percent, distance: c.distance, name };
-        });
-        similarityCandidatesMap.set(String(idsbr), enriched);
-      }
+      // Enrichment nama kandidat satu kali
+      similarityCandidatesMap = enrichCandidatesWithNames(data.candidatesMapRaw || {});
 
       similarityRunning = false;
-      document.getElementById('simStatusText').textContent = 'Selesai';
-      document.getElementById('simProgress').style.width = '100%';
-
+      updateSimProgress(total, total);
       showTempToast('Similarity selesai: ' + similarityArray.length + ' entri.');
-      rebuildCandidatesFromCheckpoint();
       refreshSummaryTableFromLayers();
 
       try {
@@ -2415,6 +1912,322 @@ function runSimilarityWorker() {
     cellDeg: GRID_CELL_DEG,
     processedIds: processedSet
   });
+}
+
+/* ============================================================
+   BLOK: EVENT BINDINGS (DOMContentLoaded, delegasi tombol, copy/undo)
+   ============================================================ */
+document.addEventListener('DOMContentLoaded', () => {
+  // Toolbar clicks
+  document.getElementById('btnLoadPool').onclick = () => document.getElementById('filePool').click();
+  document.getElementById('btnSavePool').onclick = () => {
+    if (!pool || pool.length === 0) return showTempToast('Pool kosong!');
+    const csv = poolArrayToCSV(pool);
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'pool.csv'; a.click(); URL.revokeObjectURL(a.href);
+  };
+
+  document.getElementById('btnLoadSLS').onclick = () => document.getElementById('fileSLS').click();
+  document.getElementById('btnLoadPLKUMKM').onclick = () => document.getElementById('filePLKUMKM').click();
+  document.getElementById('btnLoadMATCHAPRO').onclick = () => document.getElementById('fileMATCHAPRO').click();
+  document.getElementById('btnLoadSWMAPS').onclick = () => document.getElementById('fileSWMAPS').click();
+  document.getElementById('btnLoadKDM').onclick = () => document.getElementById('fileKDM').click();
+
+  // File loaders
+  document.getElementById('filePool').onchange = async (e) => {
+    const f = e.target.files[0]; if (!f) return;
+    try {
+      showLoadingOverlay(true);
+      const text = await f.text();
+      pool = poolCSVToArray(text);
+      rebuildPoolIndex();
+      showTempToast(`Pool dimuat (${pool.length} entri).`);
+      if (!map.hasLayer(poolOverlayGroup)) map.addLayer(poolOverlayGroup);
+      scheduleRefresh();
+      rebuildLayerIndexes();
+      refreshSummaryFlagsBatch();
+      if (summaryTableInstance) refreshSummaryTableFromLayers();
+    } catch (err) { console.warn(err); showTempToast('Gagal memuat pool. Periksa format CSV.', 2000); }
+    finally { showLoadingOverlay(false); }
+  };
+
+  document.getElementById('fileSLS').onchange = async (e) => {
+    const f = e.target.files[0]; if (!f) return;
+    try {
+      showLoadingOverlay(true);
+      const text = await f.text(); const json = JSON.parse(text);
+      slsLayer.clearLayers(); slsLayer.addData(json);
+      if (slsLayer.getLayers().length > 0) {
+        safeFitBounds(slsLayer);
+        slsSnapshot = slsLayer.getLayers().slice();
+        const kec = new Set();
+        slsSnapshot.forEach(layer => {
+          const p = layer.feature?.properties || {};
+          const nm = getPropIgnoreCase(p, ['nmkec','Nama_Kec','kecamatan']) || '';
+          if (nm) kec.add(nm);
+        });
+        fillSelectFromSet('filterKec', kec, '--Pilih Kecamatan--');
+        fillSelectFromSet('filterDesa', new Set(), '--Pilih Desa--');
+        fillSelectFromSet('filterSLS', new Set(), '--Pilih SLS--');
+      }
+      if (matchaproLayer.getLayers().length > 0) {
+        spawnWorkerTableForSummary();
+      }
+    } catch (err) { console.warn(err); showTempToast('Error parsing SLS GeoJSON', 2000); }
+    finally { showLoadingOverlay(false); }
+  };
+
+  document.getElementById('filePLKUMKM').onchange = async (e) => {
+    const f = e.target.files[0]; if (!f) return;
+    try {
+      showLoadingOverlay(true);
+      const name = (f.name || '').toLowerCase(); const text = await f.text();
+      if (name.endsWith('.csv')) {
+        const parsed = Papa.parse(text, { header:true, skipEmptyLines:true });
+        const geo = csvRowsToGeoJSON(parsed.data);
+        plkLayer.clearLayers(); plkLayer.addData(geo); safeFitBounds(plkLayer);
+      } else {
+        const json = JSON.parse(text); plkLayer.clearLayers(); plkLayer.addData(json); safeFitBounds(plkLayer);
+      }
+      showTempToast('PLKUMKM dimuat');
+    } catch (err) { console.warn(err); showTempToast('Error memuat PLKUMKM', 2000); }
+    finally { showLoadingOverlay(false); }
+  };
+
+  document.getElementById('fileSWMAPS').onchange = async (e) => {
+    const f = e.target.files[0]; if (!f) return;
+    try {
+      showLoadingOverlay(true);
+      const text = await f.text(); const parsed = Papa.parse(text, { header:true, skipEmptyLines:true }).data;
+      const geo = csvRowsToGeoJSON(parsed); swmapsLayer.clearLayers(); swmapsLayer.addData(geo); safeFitBounds(swmapsLayer);
+      scheduleRefresh();
+      rebuildLayerIndexes();
+      showTempToast('SWMAPS dimuat');
+      // Enrichment ulang kandidat sesuai indeks terbaru
+      similarityCandidatesMap = enrichCandidatesWithNames(Object.fromEntries(similarityCandidatesMap));
+      if (summaryTableInstance) refreshSummaryTableFromLayers();
+    } catch (err) { console.warn(err); showTempToast('Error memuat SWMAPS', 2000); }
+    finally { showLoadingOverlay(false); }
+  };
+
+  document.getElementById('fileKDM').onchange = async (e) => {
+    const f = e.target.files[0]; if (!f) return;
+    try {
+      showLoadingOverlay(true);
+      const text = await f.text(); const parsed = Papa.parse(text, { header:true, skipEmptyLines:true }).data;
+      const geo = csvRowsToGeoJSON(parsed); kdmLayer.clearLayers(); kdmLayer.addData(geo); safeFitBounds(kdmLayer);
+      scheduleRefresh();
+      rebuildLayerIndexes();
+      showTempToast('KDM dimuat');
+      similarityCandidatesMap = enrichCandidatesWithNames(Object.fromEntries(similarityCandidatesMap));
+      if (summaryTableInstance) refreshSummaryTableFromLayers();
+    } catch (err) { console.warn(err); showTempToast('Error memuat KDM', 2000); }
+    finally { showLoadingOverlay(false); }
+  };
+
+  document.getElementById('fileMATCHAPRO').onchange = async (e) => {
+    const f = e.target.files[0]; if (!f) return;
+    try {
+      showLoadingOverlay(true);
+      const text = await f.text(); const parsed = Papa.parse(text, { header:true, skipEmptyLines:true }).data;
+      const geo = csvToGeoJSON_Matchapro(parsed); matchaproLayer.clearLayers(); matchaproLayer.addData(geo); safeFitBounds(matchaproLayer);
+      scheduleRefresh();
+      rebuildLayerIndexes();
+      if (slsLayer.getLayers().length > 0) {
+        spawnWorkerTableForSummary();
+      }
+      refreshSummaryTableFromLayers();
+      showTempToast('Matchapro dimuat');
+    } catch (err) { console.warn(err); showTempToast('Error memuat Matchapro', 2000); }
+    finally { showLoadingOverlay(false); }
+  };
+
+  /* Toggle Summary */
+  const summaryPanel = document.getElementById('summaryPanel');
+  const toggleBtn = document.getElementById('toggleSidebar');
+  toggleBtn.onclick = () => {
+    const isOpen = summaryPanel.classList.toggle('open');
+    summaryPanel.setAttribute('aria-hidden', isOpen ? 'false' : 'true');
+    const tb = document.getElementById('toolbar').getBoundingClientRect();
+    const mapRect = document.getElementById('map').getBoundingClientRect();
+    const topOffset = (tb.bottom - mapRect.top) + 8;
+    summaryPanel.style.top = `${topOffset}px`;
+    if (isOpen && !summaryTableInstance) initSummaryDataTable();
+  };
+
+  /* Summary header buttons */
+  document.getElementById('btnLoadSimilarity').onclick = () => {
+    document.getElementById('fileSimilarityLoad').click();
+  };
+  document.getElementById('btnSaveProgress').onclick = () => saveSimilarityProgressCSV();
+  document.getElementById('fileSimilarityLoad').onchange = async (e) => {
+    const f = e.target.files[0]; if (!f) return;
+    try {
+      const text = await f.text();
+      loadSimilarityProgressCSV(text);
+      showTempToast(`Similarity checkpoint dimuat (${similarityArray.length} entri).`);
+      rebuildLayerIndexes();
+      // Bangun raw map dari similarityArray untuk enrichment names
+      const rawMap = {};
+      similarityArray.forEach(r => {
+        const k = String(r.idsbr);
+        (rawMap[k] = rawMap[k] || []).push({ sumber:r.sumber, id:r.id, percent:r.percent, distance:r.distance });
+      });
+      similarityCandidatesMap = enrichCandidatesWithNames(rawMap);
+      refreshSummaryTableFromLayers();
+      const total = (matchaproLayer.toGeoJSON().features || []).length;
+      const initialDone = getProcessedIdsFromCheckpoint().size;
+      updateSimProgress(initialDone, total);
+    } catch (err) { console.warn(err); showTempToast('Gagal memuat similarity CSV.', 1800); }
+  };
+
+  document.getElementById('btnCheckSimilarity').onclick = () => runSimilarityWorker();
+
+  /* Threshold & Group toggle */
+  const thresholdSelect = document.getElementById('thresholdSelect');
+  if (thresholdSelect) thresholdSelect.addEventListener('change', () => {
+    currentThresholdPct = parseInt(thresholdSelect.value || '60', 10);
+    refreshSummaryTableFromLayers();
+  });
+  const groupToggle = document.getElementById('groupToggle');
+  if (groupToggle) groupToggle.addEventListener('change', () => {
+    refreshSummaryTableFromLayers();
+  });
+
+  /* Modal close handlers */
+  const modalEl = document.getElementById('similarityModal');
+  const modalClose = document.getElementById('similarityModalClose');
+  const modalCloseBtn = document.getElementById('modalCloseBtn');
+  [modalClose, modalCloseBtn].forEach(btn => { if (btn) btn.onclick = () => hideSimilarityModal(); });
+  if (modalEl) {
+    modalEl.addEventListener('click', (ev) => { if (ev.target === modalEl) hideSimilarityModal(); });
+  }
+});
+
+/* Delegasi global: tombol aksi kandidat (modal & child table) */
+document.addEventListener('click', (ev) => {
+  const btn = ev.target.closest('button.action-dupl, button.action-match-kdm, button.action-match-sw');
+  if (!btn) return;
+  const id = btn.getAttribute('data-id');
+  const id_sumber = btn.getAttribute('data-id_sumber');
+  const isDupl = btn.classList.contains('action-dupl');
+  const flag = isDupl ? 'Duplikat' : (btn.classList.contains('action-match-kdm') ? 'KDM' : 'SWMAPS');
+
+  const exists = (poolIndex.byId.get(id) || []).some(p =>
+    String(p.id_sumber) === String(id_sumber) &&
+    (flag === 'Duplikat' ? String(p.flag).toLowerCase().includes('duplikat') : p.flag === flag)
+  );
+  if (exists) return showTempToast(`Relasi ${flag} sudah ada di pool`);
+
+  if (pushPool({ id, id_sumber, flag })) {
+    showTempToast(`${flag} tersimpan`);
+    rebuildPoolIndex();
+    scheduleRefresh();
+    refreshSummaryFlagsBatch();
+    refreshSummaryTableFromLayers();
+  }
+});
+
+/* Delegasi global: copy & undo di popup */
+map.on('popupopen', (e) => {
+  setTimeout(() => {
+    const popupEl = e.popup.getElement(); if (!popupEl) return;
+
+    popupEl.querySelectorAll('[data-copy-id], .copy-icon').forEach(el => {
+      el.onclick = null;
+      try { el.removeEventListener('click', el._copyHandler); } catch(err){}
+      const handler = () => {
+        const attr = el.getAttribute('data-copy-id') || el.dataset.copyId;
+        if (attr) copyToClipboard(attr);
+        else {
+          const txt = el.previousElementSibling ? el.previousElementSibling.textContent : (el.innerText || el.textContent || '');
+          if (txt) copyToClipboard(txt.trim());
+        }
+      };
+      el._copyHandler = handler; el.addEventListener('click', handler);
+    });
+
+    popupEl.querySelectorAll('.undo-icon').forEach(el => {
+      el.onclick = null;
+      try { el.removeEventListener('click', el._undoHandler); } catch(err){}
+      const handler = () => {
+        const id = el.getAttribute('data-id') || el.dataset.id || '';
+        const id_sumber = el.getAttribute('data-id_sumber') || el.dataset.idSumber || '';
+        const flag = el.getAttribute('data-flag') || el.dataset.flag || '';
+        let before = pool.length;
+        if (id && id_sumber && flag) {
+          pool = pool.filter(p => !(String(p.id)===String(id) && String(p.id_sumber)===String(id_sumber) && String(p.flag)===String(flag)));
+        } else if (id) {
+          pool = pool.filter(p => !(String(p.id)===String(id) || String(p.id_sumber)===String(id)));
+        }
+        rebuildPoolIndex();
+        const after = pool.length;
+        showTempToast(after < before ? 'Data pool system berhasil dihapus' : 'Tidak ditemukan data pool terkait');
+        scheduleRefresh();
+        try { e.popup._source.closePopup(); } catch(err){}
+        refreshSummaryFlagsBatch();
+        refreshSummaryTableFromLayers();
+      };
+      el._undoHandler = handler; el.addEventListener('click', handler);
+    });
+  }, 20);
+});
+
+/* Rebuild index nama & koordinat per-layer sumber (dipakai oleh enrichment kandidat) */
+function rebuildLayerIndexes() {
+  matchaproIdx.clear(); kdmIdx.clear(); swmapsIdx.clear();
+  matchaproLayer.eachLayer(l => {
+    const p = l.feature?.properties || {};
+    const id = (p.idsbr || p.IDSBR || p.IdSbr || p.id_sbr || p.id || '').toString();
+    const name = getPropIgnoreCase(p, ['nama_usaha','Nama_Usaha','nama','nama_komersial_usaha']) || '';
+    const lat = l.feature?.geometry?.coordinates?.[1];
+    const lon = l.feature?.geometry?.coordinates?.[0];
+    if (id) matchaproIdx.set(id, { name, lat, lon });
+  });
+  kdmLayer.eachLayer(l => {
+    const p = l.feature?.properties || {};
+    const id = (getPropIgnoreCase(p, ['id','ID','IDS','Id']) || '').toString();
+    const name = getPropIgnoreCase(p, ['Nama_Usaha','nama_usaha','nama']) || '';
+    const lat = l.feature?.geometry?.coordinates?.[1];
+    const lon = l.feature?.geometry?.coordinates?.[0];
+    if (id) kdmIdx.set(id, { name, lat, lon });
+  });
+  swmapsLayer.eachLayer(l => {
+    const p = l.feature?.properties || {};
+    const id = (getPropIgnoreCase(p, ['id','ID','IDS','Id']) || '').toString();
+    const name = getPropIgnoreCase(p, ['Nama_Usaha','nama_usaha','nama','nama_komersial_usaha']) || '';
+    const lat = l.feature?.geometry?.coordinates?.[1];
+    const lon = l.feature?.geometry?.coordinates?.[0];
+    if (id) swmapsIdx.set(id, { name, lat, lon });
+  });
+}
+
+/* Save/Load similarity checkpoint CSV */
+function saveSimilarityProgressCSV() {
+  if (!similarityArray || similarityArray.length === 0) {
+    showTempToast('Belum ada progres similarity untuk disimpan.');
+    return;
+  }
+  const header = 'idsbr,sumber,id,percent,distance\n';
+  const rows = similarityArray.map(r => `${r.idsbr},${r.sumber},${r.id},${r.percent},${r.distance}`);
+  const csv = header + rows.join('\n');
+  const blob = new Blob([csv], { type: 'text/csv' });
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'similarity_checkpoint.csv'; a.click(); URL.revokeObjectURL(a.href);
+  showTempToast('Checkpoint similarity disimpan.');
+}
+function loadSimilarityProgressCSV(text) {
+  const parsed = Papa.parse(text, { header:true, skipEmptyLines:true });
+  const out = [];
+  parsed.data.forEach(row => {
+    if (!row) return;
+    const idsbr = (row.idsbr || row.IDSBR || '').toString().trim();
+    const sumber = (row.sumber || row.Sumber || '').toString().trim();
+    const id = (row.id || row.ID || '').toString().trim();
+    const percent = parseInt(row.percent || row.Percent || '0', 10);
+    const distance = parseFloat(row.distance || row.Distance || '0');
+    if (idsbr) out.push({ idsbr, sumber, id, percent, distance });
+  });
+  similarityArray = out;
 }
 </script>
 </body>
