@@ -2,7 +2,7 @@
 <html lang="id">
 <head>
   <meta charset="utf-8" />
-  <title>WebGIS - Direktori Usaha v8 (refactor blok kode)</title>
+  <title>WebGIS - Direktori Usaha v8</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <!-- Leaflet -->
@@ -208,11 +208,10 @@
           <button id="btnCheckSimilarity" title="Cek Similarity">🔎</button>
           <button id="btnSaveProgress" title="Save Progres (checkpoint)">💾</button>
           <!-- Filter threshold + Group toggle -->
-          <!-- [PERBAIKAN OPSI THRESHOLD] tag option valid -->
           <select id="thresholdSelect" title="Filter kandidat berdasarkan % kemiripan">
-            <option value="25">Threshold 25%</option>
+            <option value="25" selected>Threshold 25%</option>
             <option value="40">Threshold 40%</option>
-            <option value="60" selected>Threshold 60%</option>
+            <option value="60">Threshold 60%</option>
             <option value="75">Threshold 75%</option>
             <option value="85">Threshold 85%</option>
           </select>
@@ -1243,7 +1242,8 @@ function initSummaryDataTable() {
   $('#summaryTable').on('click', '.expand-icon', function() {
     const id = this.dataset.id;
     const tr = $(this).closest('tr');
-    const row = summaryTableInstance.row(tr);
+    theRow = summaryTableInstance.row(tr);
+    const row = theRow;
     const isGrouped = document.getElementById('groupToggle')?.checked;
     if (!isGrouped) {
       showTempToast('Aktifkan "Group by ID" untuk melihat detail terkelompok.');
@@ -1444,13 +1444,13 @@ function refreshSummaryTableFromLayers() {
   summaryTableInstance.rows.add(isGrouped ? summaryGroupedRows : summaryFlatRows);
   summaryTableInstance.draw(false);
 
-  /* [Penanganan similarityLinksGroup]: setiap refresh table, bersihkan koneksi yang lama agar tidak stale */
+  /* Bersihkan koneksi yang lama agar tidak stale di peta */
   similarityLinksGroup.clearLayers();
 }
 
 /* ============================================================
    BLOK: CHILD DETAIL & MODAL (buildChildDetailHTML, showSimilarityModalForId)
-   - Collapsible child: kombinasi pool + similarity
+   - Collapsible child: kombinasi pool + similarity (sorted by distance asc)
    - Modal: kandidat >25%, tombol aksi
    ============================================================ */
 function buildChildDetailHTML(idsbr) {
@@ -1501,6 +1501,13 @@ function buildChildDetailHTML(idsbr) {
       sumber: c.sumber, id: c.id, name: c.name || '', percent: c.percent, distance: Math.round(c.distance),
       flag: (c.sumber === 'Matchapro') ? 'Duplikat' : c.sumber, origin:'similarity'
     });
+  });
+
+  // Sort ascending by distance
+  items.sort((a,b) => {
+    const da = Number.isFinite(a.distance) ? a.distance : Infinity;
+    const db = Number.isFinite(b.distance) ? b.distance : Infinity;
+    return da - db;
   });
 
   const rowsHtml = items.map(it => {
@@ -1950,8 +1957,7 @@ function runSimilarityWorker() {
 
 /* ============================================================
    BLOK: EVENT BINDINGS (DOMContentLoaded, delegasi tombol, dll)
-   - Satu tempat, tidak duplikasi binding
-   - [Tambahan]: zoomToMatchaproById, buildConnectionLinesForId, modal close handlers
+   - Terpusat: zoomToMatchaproById, buildConnectionLinesForId, modal close handlers
    ============================================================ */
 document.addEventListener('DOMContentLoaded', () => {
   /* Toolbar load/save */
@@ -2096,7 +2102,7 @@ document.addEventListener('DOMContentLoaded', () => {
   });
   if (selSLS) selSLS.addEventListener('change', () => { applyFilterAndZoom(); refreshSummaryTableFromLayers(); });
 
-  /* Toggle Summary (satu binding, tidak duplikasi) */
+  /* Toggle Summary */
   const summaryPanel = document.getElementById('summaryPanel');
   const toggleBtn = document.getElementById('toggleSidebar');
   toggleBtn.onclick = () => {
@@ -2189,7 +2195,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }, 20);
   });
 
-  /* [Baru] Modal close handlers (dipusatkan di blok EVENT BINDINGS) */
+  /* Modal close handlers */
   const modalEl = document.getElementById('similarityModal');
   const modalClose = document.getElementById('similarityModalClose');
   const modalCloseBtn = document.getElementById('modalCloseBtn');
@@ -2198,7 +2204,7 @@ document.addEventListener('DOMContentLoaded', () => {
     modalEl.addEventListener('click', (ev) => { if (ev.target === modalEl) hideSimilarityModal(); });
   }
 
-  /* [Baru] zoomToMatchaproById: zoom ke marker & buka popup (dipusatkan) */
+  /* zoomToMatchaproById: zoom ke marker & buka popup */
   window.zoomToMatchaproById = function(id) {
     if (!id) return;
     let found = null;
@@ -2220,7 +2226,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   };
 
-  /* [Baru] buildConnectionLinesForId: gambar garis koneksi ke kandidat (pool + similarity) */
+  /* buildConnectionLinesForId: gambar garis koneksi ke kandidat (pool + similarity) */
   window.buildConnectionLinesForId = function(idsbr) {
     similarityLinksGroup.clearLayers();
 
